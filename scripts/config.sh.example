@@ -1,0 +1,26 @@
+# ---------------------------------------------------------------------------
+# Personal settings for the helper scripts.
+#
+#   1. Copy this file:      cp scripts/config.sh.example scripts/config.sh
+#   2. Edit the values below to match YOUR board.
+#   (config.sh is git-ignored, so everyone can have different values.)
+# ---------------------------------------------------------------------------
+
+# The username you log in with ON THE BOARD (the one you chose when you
+# flashed the SD card), e.g. the name in:  ssh <this>@192.168.7.2
+BOARD_USER="debian"
+
+# The board's IP address.
+#   - Board plugged into your computer by USB-C ("Ethernet over USB"):  192.168.7.2
+#   - Board on the wired network: run `ip -4 addr` on the board and use its address
+BOARD_HOST="192.168.7.2"
+
+# Folder on the board where the programs are copied. A relative name means
+# "inside your home folder on the board", so it works for any username.
+BOARD_DIR="campus_tour"
+
+# Optional extra options for cmake. Examples:
+#   -DJOYSTICK_Y_UP_IS_HIGH=0        if UP and DOWN come out swapped
+#   -DJOYSTICK_X_RIGHT_IS_HIGH=0     if LEFT and RIGHT come out swapped
+#   -DJOYSTICK_X_CHANNEL=1 -DJOYSTICK_Y_CHANNEL=0   if X and Y are on other ADC channels
+CMAKE_EXTRA_ARGS=""
