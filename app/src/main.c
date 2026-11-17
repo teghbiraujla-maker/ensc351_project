@@ -13,6 +13,7 @@
 #include <unistd.h>
 #include "audio_player.h"
 #include "hal/audio_device.h"
+#include "hal/encoder.h" // Temporary encoder verification inclusion
 #include "terminal_input.h"
 #include "track_list.h"
 
@@ -21,6 +22,7 @@
 #define SEEK_STEP_SEC    10
 
 static volatile sig_atomic_t stop_requested = 0;
+static int s_counter = 0; // Temp encoder
 
 static void handle_signal(int signal_number)
 {
@@ -110,6 +112,13 @@ static void print_usage(const char *program)
     printf("                      or $TOUR_AUDIO_DEVICE)\n");
 }
 
+// Temp encoder verification function
+static void onEncoderTurn(int direction) 
+{
+    s_counter += direction;
+    printf("Encoder turned: Counter %d\n", s_counter);
+} // End temp
+
 int main(int argc, char *argv[])
 {
     char audio_dir[PATH_MAX];
@@ -142,6 +151,8 @@ int main(int argc, char *argv[])
         return 1;
     }
     install_signal_handlers();
+
+    Encoder_init(onEncoderTurn); // Temp encoder initialization
 
     printf("\n=== SFU Burnaby Campus Tour ===\n");
     print_track_list();
@@ -247,6 +258,7 @@ int main(int argc, char *argv[])
     }
 
     printf("\nGoodbye!\n");
+    Encoder_cleanup(); // Added Encoder_cleanup (temporary)
     audio_player_cleanup();
     track_list_cleanup();
     return 0;
