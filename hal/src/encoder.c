@@ -3,12 +3,17 @@
 #include <gpiod.h> // GPIO controls
 #include <pthread.h> // Thread controls
 #include <stdatomic.h>
+#include <time.h>
+#include <errno.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
-// The two GPIO input pins being used
+// The three GPIO input pins being used
 #define ENCODER_LINE_A_NAME "GPIO16"
 #define ENCODER_LINE_B_NAME "GPIO17" 
+#define ENCODER_BUTTON_NAME "GPIO18"
+#define BUTTON_DEBOUNCE_MS 100
 
 #define ENCODER_CONSUMER_NAME "beagley-encoder"
 #define GPIO_CHIP_PATH_FORMAT "/dev/gpiochip%d"
@@ -54,6 +59,7 @@ static unsigned int s_levelB = 1;
 static unsigned char s_state = STATE_START;
 
 static Encoder_callback_t s_onTurn = NULL;
+static Encoder_button_callback_t s_onPress = NULL;
 static pthread_t s_thread;
 static atomic_bool s_stopRequested = false;
 static bool s_isInitialized = false;
@@ -64,15 +70,35 @@ static void *encoderThread(void *arg);
 static void handleEvents(int eventCount);
 static int stepStateMachine(unsigned int levelA, unsigned int levelB);
 
+static struct gpiod_line_request *s_buttonRequest = NULL;
+static struct gpiod_edge_event_buffer *s_buttonEventBuffer = NULL;
+static unsigned int s_buttonOffset = 0;
+static struct timespec s_lastPressTime = {0, 0};
+static bool findButtonLine(void);
+static struct gpiod_line_request *requestButtonLine(bool usePullUp);
+static long elapsedMs(const struct timespec *now, const struct timespec *prev);
+
+
+static void releaseResources(void) {
+    if (s_eventBuffer != NULL) {gpiod_edge_event_buffer_free(s_eventBuffer); s_eventBuffer = NULL;}
+    if (s_request != NULL) {gpiod_line_request_release(s_request); s_request = NULL;}
+    if (s_buttonEventBuffer != NULL) {gpiod_edge_event_buffer_free(s_buttonEventBuffer); s_buttonEventBuffer = NULL;}
+    if (s_buttonRequest != NULL) {gpiod_line_request_release(s_buttonRequest); s_buttonRequest = NULL;}
+    if (s_chip != NULL) {gpiod_chip_close(s_chip); s_chip = NULL;}
+}
+
 // Define and write out initialization function
-void Encoder_init(Encoder_callback_t onTurn) {
+bool Encoder_init(Encoder_callback_t onTurn, Encoder_button_callback_t onPress) {
     assert(!s_isInitialized);
     assert(onTurn != NULL);
     s_onTurn = onTurn;
+    s_onPress = onPress;
+    s_lastPressTime = (struct timespec){0, 0};
+
     if (!findChipWithEncoderLines()) {
         fprintf(stderr, "ERROR: GPIO %s and %s not found anywhere\n", 
         ENCODER_LINE_A_NAME, ENCODER_LINE_B_NAME);
-        exit(EXIT_FAILURE);
+        return false;
     }
 
     s_request = requestEncoderLines(true);
@@ -81,20 +107,50 @@ void Encoder_init(Encoder_callback_t onTurn) {
     }
     if (s_request == NULL) {
         perror("Unable to request GPIO lines");
-        exit(EXIT_FAILURE);
+        releaseResources();
+        return false;
     }
 
     s_eventBuffer = gpiod_edge_event_buffer_new(EVENT_BUFFER_CAPACITY);
-    assert(s_eventBuffer != NULL);
+    if (s_eventBuffer == NULL) {
+        releaseResources();
+        return false;
+    }
 
     s_levelA = (gpiod_line_request_get_value(s_request, s_offsetA) == GPIOD_LINE_VALUE_ACTIVE);
     s_levelB = (gpiod_line_request_get_value(s_request, s_offsetB) == GPIOD_LINE_VALUE_ACTIVE);
     s_state = STATE_START;
 
+    if (s_onPress != NULL && findButtonLine()) {
+        s_buttonRequest = requestButtonLine(true);
+        if (s_buttonRequest == NULL) {
+            s_buttonRequest = requestButtonLine(false);
+        }
+        if (s_buttonRequest != NULL) {
+            s_buttonEventBuffer = gpiod_edge_event_buffer_new(EVENT_BUFFER_CAPACITY);
+            if (s_buttonEventBuffer == NULL) {
+                gpiod_line_request_release(s_buttonRequest);
+                s_buttonRequest = NULL;
+            }
+        }
+    }
+
     atomic_store(&s_stopRequested, false);
-    s_isInitialized = true;
+
+    sigset_t allSignals, oldMask;
+    sigfillset(&allSignals);
+    pthread_sigmask(SIG_BLOCK, &allSignals, &oldMask);
     int result = pthread_create(&s_thread, NULL, encoderThread, NULL);
-    assert(result == 0);
+    pthread_sigmask(SIG_SETMASK, &oldMask, NULL);
+
+    if (result != 0) {
+        fprintf(stderr, "ERROR: could not start encoder thread\n");
+        releaseResources();
+        return false;
+    }
+
+    s_isInitialized = true;
+    return true;
 }
 
 // Cleanup function is here
@@ -102,14 +158,11 @@ void Encoder_cleanup(void) {
     assert(s_isInitialized);
     atomic_store(&s_stopRequested, true);
     pthread_join(s_thread, NULL);
+    releaseResources();
 
-    // Main goal is to clear all saved variables and de-initialise
-    gpiod_edge_event_buffer_free(s_eventBuffer);
-    gpiod_line_request_release(s_request);
-    gpiod_chip_close(s_chip);
-    s_eventBuffer = NULL;
-    s_request = NULL;
-    s_chip = NULL;
+    s_onTurn = NULL;
+    s_onPress = NULL;
+
     s_isInitialized = false;
 }
 
@@ -158,11 +211,38 @@ static struct gpiod_line_request *requestEncoderLines(bool usePullUp) {
     return request;
 }
 
+static void pollButton(void) {
+    if (s_buttonRequest == NULL || s_buttonEventBuffer == NULL) {
+        return;
+    }
+
+    int btnWait = gpiod_line_request_wait_edge_events(s_buttonRequest, 0);
+    if (btnWait > 0) {
+        int btnCount  = gpiod_line_request_read_edge_events(
+            s_buttonRequest, s_buttonEventBuffer, EVENT_BUFFER_CAPACITY
+        );
+        if (btnCount > 0) {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (elapsedMs(&now, &s_lastPressTime) >= BUTTON_DEBOUNCE_MS) {
+                s_lastPressTime = now;
+                if (s_onPress) {
+                    s_onPress();
+                }
+            }
+        }
+    }
+}
+
 static void *encoderThread(void *arg) {
     (void)arg;
     while (!atomic_load(&s_stopRequested)) {
+        pollButton();
         int waitResult = gpiod_line_request_wait_edge_events(s_request, EDGE_WAIT_TIMEOUT_NS);
         if (waitResult < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
             perror("Waiting for edge events");
             break;
         }
@@ -175,6 +255,7 @@ static void *encoderThread(void *arg) {
             break;
         }
         handleEvents(eventCount); // Helper function referred to below
+        pollButton();
     }
     return NULL;
 }
@@ -209,4 +290,65 @@ static int stepStateMachine(unsigned int levelA, unsigned int levelB) {
         case RESULT_CCW: return -1;
         default: return 0;
     }
+}
+
+static long elapsedMs(const struct timespec *now, const struct timespec *prev) {
+    long secDiff = now->tv_sec - prev->tv_sec;
+    long nsecDiff = now->tv_nsec - prev->tv_nsec;
+    return secDiff * 1000L + nsecDiff / 1000000LL;
+}
+
+static bool findButtonLine(void) {
+    for (int chipNumber = 0; chipNumber < MAX_GPIO_CHIPS_TO_SEARCH; chipNumber++) {
+        char path[GPIO_CHIP_PATH_LENGTH];
+        snprintf(path, sizeof(path), GPIO_CHIP_PATH_FORMAT, chipNumber);
+        struct gpiod_chip *chip = gpiod_chip_open(path);
+        if (chip == NULL) {
+            continue;
+        }
+
+        int offset = gpiod_chip_get_line_offset_from_name(chip, ENCODER_BUTTON_NAME);
+        gpiod_chip_close(chip);
+        if (offset >= 0) {
+            s_buttonOffset = (unsigned int)offset;
+            return true;
+        }
+    }
+    return false;
+}
+
+static struct gpiod_line_request *requestButtonLine(bool usePullUp) {
+    for (int chipNumber = 0; chipNumber < MAX_GPIO_CHIPS_TO_SEARCH; chipNumber++) {
+        char path[GPIO_CHIP_PATH_LENGTH];
+        snprintf(path, sizeof(path), GPIO_CHIP_PATH_FORMAT, chipNumber);
+        struct gpiod_chip *c = gpiod_chip_open(path);
+        if (c == NULL) {
+            continue;
+        }
+        int offset = gpiod_chip_get_line_offset_from_name(c, ENCODER_BUTTON_NAME);
+        if (offset == (int)s_buttonOffset) {
+            struct gpiod_line_settings *settings = gpiod_line_settings_new();
+            struct gpiod_line_config *lineConfig = gpiod_line_config_new();
+            struct gpiod_request_config *requestConfig = gpiod_request_config_new();
+            assert(settings != NULL && lineConfig != NULL && requestConfig != NULL);
+            gpiod_line_settings_set_direction(settings, GPIOD_LINE_DIRECTION_INPUT);
+            gpiod_line_settings_set_edge_detection(settings, GPIOD_LINE_EDGE_FALLING);
+            if (usePullUp) {
+                gpiod_line_settings_set_bias(settings, GPIOD_LINE_BIAS_PULL_UP);
+            }
+
+            gpiod_line_config_add_line_settings(lineConfig, &s_buttonOffset, 1, settings);
+            gpiod_request_config_set_consumer(requestConfig, ENCODER_CONSUMER_NAME "-btn");
+            gpiod_request_config_set_event_buffer_size(requestConfig, EVENT_BUFFER_CAPACITY);
+
+            struct gpiod_line_request *req = gpiod_chip_request_lines(c, requestConfig, lineConfig);
+            gpiod_request_config_free(requestConfig);
+            gpiod_line_config_free(lineConfig);
+            gpiod_line_settings_free(settings);
+            gpiod_chip_close(c);
+            return req;
+        }
+        gpiod_chip_close(c);
+    }
+    return NULL;
 }
