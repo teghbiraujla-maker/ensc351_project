@@ -121,6 +121,7 @@ static void onEncoderTurn(int direction)
 
 static void onEncoderPress(void) {
     printf("Encoder pressed\n");
+}
 
 int main(int argc, char *argv[])
 {
@@ -155,8 +156,13 @@ int main(int argc, char *argv[])
     }
     install_signal_handlers();
 
-    Encoder_init(onEncoderTurn); // Temp encoder initialization
-    Encoder_setPressCallback(onEncoderPress);
+    // Temp encoder initialization
+    if (!Encoder_init(onEncoderTurn, onEncoderPress)) {
+        fprintf(stderr, "Encoder unavailable.\n");
+        audio_player_cleanup();
+        track_list_cleanup();
+        return 1;
+    }
 
     printf("\n=== SFU Burnaby Campus Tour ===\n");
     print_track_list();
