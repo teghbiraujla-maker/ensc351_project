@@ -153,6 +153,7 @@ int main(int argc, char *argv[])
     install_signal_handlers();
 
     Encoder_init(onEncoderTurn); // Temp encoder initialization
+    Encoder_setPressCallback(onEncoderPress);
 
     printf("\n=== SFU Burnaby Campus Tour ===\n");
     print_track_list();
