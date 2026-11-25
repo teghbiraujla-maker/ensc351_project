@@ -119,6 +119,9 @@ static void onEncoderTurn(int direction)
     printf("Encoder turned: Counter %d\n", s_counter);
 } // End temp
 
+static void onEncoderPress(void) {
+    printf("Encoder pressed\n");
+
 int main(int argc, char *argv[])
 {
     char audio_dir[PATH_MAX];
