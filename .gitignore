@@ -1,0 +1,9 @@
+# Build output
+build/
+build-*/
+
+# Personal settings (copy from config.sh.example)
+scripts/config.sh
+
+# Runtime log
+*.log

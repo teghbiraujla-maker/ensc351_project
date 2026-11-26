@@ -8,12 +8,12 @@ sudo apt-get update || echo "(apt update reported problems; trying the install a
 sudo apt-get install -y mpg123 alsa-utils
 
 echo
-echo "== 2. Checking SPI (needed for the joystick's ADC) =="
-if [ -e /dev/spidev0.0 ]; then
-    echo "OK: /dev/spidev0.0 exists."
+echo "== 2. Checking libgpiod v2 (needed for the rotary encoder) =="
+if ldconfig -p 2>/dev/null | grep -q "libgpiod.so.3"; then
+    echo "OK: libgpiod v2 runtime library found."
 else
-    echo "PROBLEM: /dev/spidev0.0 does not exist. SPI is not enabled on this board."
-    echo "         Follow the course's SPI guide to enable it, then reboot."
+    echo "PROBLEM: libgpiod v2 (libgpiod.so.3) not found. The encoder will not work."
+    echo "         Try:  sudo apt-get install libgpiod3   (package name may differ on your image)"
 fi
 
 echo

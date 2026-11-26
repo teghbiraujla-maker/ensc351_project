@@ -1,28 +1,49 @@
-// Campus tour player - audio playback with terminal controls.
+// Campus tour player - audio tour controlled with one rotary encoder.
 //
-// Type a track number to play it, then use the commands in "help" to pause,
-// change the volume, and so on. The terminal is a stand-in for the keypad:
-// all input arrives as input_event_t values from terminal_input.c.
+// Inputs: the encoder (hal/encoder.c) and, for debugging, typed commands
+// (terminal_input.c) both produce control_event_t values, which go through
+// one queue (input_queue.c) to the main loop. tour_controller.c decides what
+// each event does. All messages go through app_log.c.
+//
+// Main loop, every FRAME_INTERVAL_MS (or sooner when an input arrives):
+//   1. handle waiting inputs
+//   2. tour_controller_tick()  - notices a track ending by itself
+//   3. (GUI, later) draw tour_controller_view()
 
+#include <errno.h>
 #include <limits.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "app_log.h"
 #include "audio_player.h"
+#include "controls.h"
 #include "hal/audio_device.h"
-#include "hal/encoder.h" // Temporary encoder verification inclusion
+#include "hal/encoder.h"
+#include "input_queue.h"
+#include "playback_display.h"
 #include "terminal_input.h"
+#include "tour_controller.h"
 #include "track_list.h"
 
-#define POLL_INTERVAL_MS 200
-#define VOLUME_STEP      10
-#define SEEK_STEP_SEC    10
+#define FRAME_INTERVAL_MS 100    // how often the loop runs when nothing happens (GUI redraw rate)
 
 static volatile sig_atomic_t stop_requested = 0;
-static int s_counter = 0; // Temp encoder
+
+// The real player, as seen by tour_controller (the unit test uses a fake one).
+static const tour_player_t real_player = {
+    .get_status     = audio_player_get_status,
+    .play           = audio_player_play,
+    .toggle_pause   = audio_player_toggle_pause,
+    .stop           = audio_player_stop,
+    .adjust_volume  = audio_player_adjust_volume,
+    .seek_relative  = audio_player_seek_relative,
+    .get_last_error = audio_player_get_last_error,
+};
 
 static void handle_signal(int signal_number)
 {
@@ -40,47 +61,105 @@ static void install_signal_handlers(void)
     sigaction(SIGHUP, &action, NULL);       // e.g. the SSH session was closed
 }
 
-static void format_time(double seconds, char *out, size_t out_size)
+// ---------------------------------------------------------------------------
+// Inputs -> queue. The encoder callbacks run on the encoder's thread, so they
+// only push into the thread-safe queue; the main loop does the rest.
+// ---------------------------------------------------------------------------
+static void queue_event(control_event_t event)
 {
-    int total = (int)(seconds + 0.5);
-    snprintf(out, out_size, "%02d:%02d", total / 60, total % 60);
+    if (!input_queue_push(event)) {
+        app_log("Input queue full - input dropped.");
+    }
 }
 
-static void print_track_list(void)
+static void on_encoder_turn(int direction)
 {
-    int count = track_list_count();
-    if (count == 0) {
-        printf("No MP3 files found. Copy some into the audio folder.\n");
+    control_event_t event = { CONTROL_TURN, direction };
+    queue_event(event);
+}
+
+static void on_encoder_press(Encoder_press_t press)
+{
+    control_event_t event = { press == ENCODER_PRESS_LONG ? CONTROL_LONG_PRESS : CONTROL_PRESS, 0 };
+    queue_event(event);
+}
+
+// ---------------------------------------------------------------------------
+// Debug commands
+// ---------------------------------------------------------------------------
+static void log_track_list(void)
+{
+    tour_view_t view = tour_controller_view();
+    if (view.track_count == 0) {
+        app_log("No MP3 files found. Copy some into the audio folder.");
         return;
     }
-    printf("Tour stops:\n");
-    for (int i = 0; i < count; i++) {
-        printf("  %2d  %s\n", i + 1, track_list_name(i));
+    app_log("Tour stops (> highlighted, * playing):");
+    for (int i = 0; i < view.track_count; i++) {
+        bool is_current = (i == view.current && view.mode != TOUR_MODE_CHOOSING);
+        app_log("  %c%c %2d  %s", i == view.highlighted ? '>' : ' ', is_current ? '*' : ' ',
+                i + 1, track_list_name(i));
     }
 }
 
-static void print_status(int current_track)
+static void log_status(void)
 {
-    audio_status_t status = audio_player_get_status();
-    const char *state_text = "STOPPED";
-    if (status.state == AUDIO_PLAYING) {
-        state_text = "PLAYING";
-    } else if (status.state == AUDIO_PAUSED) {
-        state_text = "PAUSED";
-    }
-
-    if (status.state == AUDIO_STOPPED || current_track < 0) {
-        printf("[%s]  volume %d%%\n", state_text, status.volume_percent);
+    static const char *focus_names[] = {
+        [TOUR_FOCUS_TRACK_LIST] = "choose a stop",
+        [TOUR_FOCUS_VOLUME]     = "volume",
+        [TOUR_FOCUS_PROGRESS]   = "skip",
+    };
+    tour_view_t view = tour_controller_view();
+    if (view.mode == TOUR_MODE_CHOOSING) {
+        if (view.highlighted >= 0) {
+            app_log("[CHOOSING] highlighted %d/%d: %s   volume %d%%   (turn = %s)",
+                    view.highlighted + 1, view.track_count, track_list_name(view.highlighted),
+                    view.audio.volume_percent, focus_names[view.focus]);
+        } else {
+            app_log("[CHOOSING] no tracks   volume %d%%", view.audio.volume_percent);
+        }
         return;
     }
-    char position[16];
-    char duration[16];
-    format_time(status.position_sec, position, sizeof(position));
-    format_time(status.duration_sec, duration, sizeof(duration));
-    printf("[%s]  %d. %s   %s / %s   volume %d%%\n", state_text, current_track + 1,
-           track_list_name(current_track), position, duration, status.volume_percent);
+    char time_text[32];
+    playback_display_time(view.audio.position_sec, view.audio.duration_sec,
+                          time_text, sizeof(time_text));
+    app_log("[%s] %d. %s   %s (%.0f%%)   volume %d%%   (turn = %s)",
+            tour_controller_mode_name(view.mode), view.current + 1, track_list_name(view.current),
+            time_text, 100.0 * playback_display_progress(&view.audio),
+            view.audio.volume_percent, focus_names[view.focus]);
 }
 
+static void handle_event(control_event_t event)
+{
+    switch (event.type) {
+    case CONTROL_TURN:
+    case CONTROL_PRESS:
+    case CONTROL_LONG_PRESS:
+        tour_controller_handle(event);
+        break;
+    case CONTROL_STATUS:
+        log_status();
+        break;
+    case CONTROL_LIST:
+        log_track_list();
+        break;
+    case CONTROL_HELP:
+        app_log("%s", terminal_input_help_text());
+        break;
+    case CONTROL_QUIT:
+        stop_requested = 1;
+        break;
+    case CONTROL_UNKNOWN:
+        app_log("Unknown command. Type h for help.");
+        break;
+    case CONTROL_NONE:
+        break;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Start-up
+// ---------------------------------------------------------------------------
 static void default_audio_dir(char *out, size_t out_size)
 {
     const char *from_env = getenv("TOUR_AUDIO_DIR");
@@ -105,22 +184,12 @@ static void default_audio_dir(char *out, size_t out_size)
 
 static void print_usage(const char *program)
 {
-    printf("Usage: %s [--audio-dir DIR] [--device ALSA_DEVICE]\n", program);
+    printf("Usage: %s [--audio-dir DIR] [--device ALSA_DEVICE] [--log FILE]\n", program);
     printf("  --audio-dir DIR     folder with the .mp3 files (default: audio/ next to the program,\n");
     printf("                      or $TOUR_AUDIO_DIR)\n");
     printf("  --device DEVICE     ALSA device, e.g. plughw:1,0 (default: auto-detect the USB adapter,\n");
     printf("                      or $TOUR_AUDIO_DEVICE)\n");
-}
-
-// Temp encoder verification function
-static void onEncoderTurn(int direction) 
-{
-    s_counter += direction;
-    printf("Encoder turned: Counter %d\n", s_counter);
-} // End temp
-
-static void onEncoderPress(void) {
-    printf("Encoder pressed\n");
+    printf("  --log FILE          also append every message to FILE (for debugging)\n");
 }
 
 int main(int argc, char *argv[])
@@ -128,148 +197,97 @@ int main(int argc, char *argv[])
     char audio_dir[PATH_MAX];
     default_audio_dir(audio_dir, sizeof(audio_dir));
     const char *requested_device = getenv("TOUR_AUDIO_DEVICE");
+    const char *log_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--audio-dir") && i + 1 < argc) {
             snprintf(audio_dir, sizeof(audio_dir), "%s", argv[++i]);
         } else if (!strcmp(argv[i], "--device") && i + 1 < argc) {
             requested_device = argv[++i];
+        } else if (!strcmp(argv[i], "--log") && i + 1 < argc) {
+            log_path = argv[++i];
         } else {
             print_usage(argv[0]);
             return !strcmp(argv[i], "--help") ? 0 : 1;
         }
     }
 
+    app_log_init(log_path, true);
+
     if (!track_list_load(audio_dir)) {
-        fprintf(stderr, "Cannot read the audio folder '%s'.\n", audio_dir);
+        app_log("Cannot read the audio folder '%s'.", audio_dir);
+        app_log_cleanup();
         return 1;
     }
 
     char device[64];
     bool device_found = audio_device_resolve(requested_device, device, sizeof(device));
-    printf("Audio device: %s%s\n", device,
-           device_found ? "" : "   (no USB audio adapter found - is it plugged in?)");
+    app_log("Audio device: %s%s", device,
+            device_found ? "" : "   (no USB audio adapter found - is it plugged in?)");
 
     if (!audio_player_init(device)) {
         track_list_cleanup();
+        app_log_cleanup();
+        return 1;
+    }
+    if (!input_queue_init()) {
+        app_log("Cannot create the input queue.");
+        audio_player_cleanup();
+        track_list_cleanup();
+        app_log_cleanup();
         return 1;
     }
     install_signal_handlers();
 
-    // Temp encoder initialization
-    if (!Encoder_init(onEncoderTurn, onEncoderPress)) {
-        fprintf(stderr, "Encoder unavailable.\n");
-        audio_player_cleanup();
-        track_list_cleanup();
-        return 1;
+    // Without the encoder the program still runs: typed commands work the same way.
+    if (!Encoder_init(on_encoder_turn, on_encoder_press)) {
+        app_log("Encoder not available - use typed commands instead (h for help).");
     }
 
-    printf("\n=== SFU Burnaby Campus Tour ===\n");
-    print_track_list();
-    printf("\n%s", terminal_input_help_text());
-    printf("\n> ");
-    fflush(stdout);
+    tour_controller_init(&real_player);
 
-    int current_track = -1;
-    bool user_stopped = true;                 // true unless a track is expected to be playing
-    audio_state_t previous_state = AUDIO_STOPPED;
+    app_log("=== SFU Burnaby Campus Tour ===");
+    log_track_list();
+    app_log("Turn to choose a stop, press to play. Type h for the typed commands.");
 
+    bool stdin_open = true;
     while (!stop_requested) {
-        input_event_t event = terminal_input_poll(POLL_INTERVAL_MS);
-        bool prompt_needed = (event.type != INPUT_NONE);
+        struct pollfd watch[2];
+        int watch_count = 0;
+        watch[watch_count++] = (struct pollfd){ input_queue_fd(), POLLIN, 0 };
+        if (stdin_open) {
+            watch[watch_count++] = (struct pollfd){ terminal_input_fd(), POLLIN, 0 };
+        }
 
-        switch (event.type) {
-        case INPUT_SELECT_TRACK: {
-            int index = event.value - 1;
-            const char *path = track_list_path(index);
-            if (path == NULL) {
-                printf("There is no track %d (choose 1-%d).\n", event.value, track_list_count());
-            } else if (audio_player_play(path)) {
-                current_track = index;
-                user_stopped = false;
-                printf("Playing %d. %s\n", event.value, track_list_name(index));
-            } else {
-                char reason[200];
-                audio_player_get_last_error(reason, sizeof(reason));
-                printf("Could not play '%s': %s\n", track_list_name(index), reason);
-            }
-            break;
-        }
-        case INPUT_TOGGLE_PAUSE:
-            if (!audio_player_toggle_pause()) {
-                printf("Nothing is playing.\n");
-            } else {
-                audio_status_t status = audio_player_get_status();
-                printf("%s\n", status.state == AUDIO_PAUSED ? "Paused." : "Resumed.");
-            }
-            break;
-        case INPUT_STOP:
-            user_stopped = true;
-            audio_player_stop();
-            printf("Stopped.\n");
-            break;
-        case INPUT_VOLUME_UP:
-            audio_player_adjust_volume(VOLUME_STEP);
-            printf("Volume %d%%\n", audio_player_get_status().volume_percent);
-            break;
-        case INPUT_VOLUME_DOWN:
-            audio_player_adjust_volume(-VOLUME_STEP);
-            printf("Volume %d%%\n", audio_player_get_status().volume_percent);
-            break;
-        case INPUT_SEEK_FORWARD:
-        case INPUT_SEEK_BACK: {
-            int seconds = (event.type == INPUT_SEEK_FORWARD) ? SEEK_STEP_SEC : -SEEK_STEP_SEC;
-            if (audio_player_get_status().state == AUDIO_STOPPED) {
-                printf("Nothing is playing.\n");
-            } else {
-                audio_player_seek_relative(seconds);
-                printf("%s %d seconds.\n", seconds > 0 ? "Forward" : "Back", SEEK_STEP_SEC);
-            }
-            break;
-        }
-        case INPUT_LIST:
-            print_track_list();
-            break;
-        case INPUT_STATUS:
-            print_status(current_track);
-            break;
-        case INPUT_HELP:
-            printf("%s", terminal_input_help_text());
-            break;
-        case INPUT_QUIT:
-            stop_requested = 1;
-            break;
-        case INPUT_UNKNOWN:
-            printf("Unknown command. Type h for help.\n");
-            break;
-        case INPUT_NONE:
+        int ready = poll(watch, (nfds_t)watch_count, FRAME_INTERVAL_MS);
+        if (ready < 0 && errno != EINTR) {
+            app_log("poll failed: %s", strerror(errno));
             break;
         }
 
-        // Tell the user when a recording ends by itself.
-        audio_state_t state = audio_player_get_status().state;
-        if (previous_state != AUDIO_STOPPED && state == AUDIO_STOPPED && !user_stopped) {
-            char reason[200];
-            audio_player_get_last_error(reason, sizeof(reason));
-            if (reason[0] != '\0') {
-                printf("\nPlayback problem: %s\n", reason);
-            } else {
-                printf("\nFinished: %s. Choose another stop.\n", track_list_name(current_track));
+        // Typed input: translated and queued like encoder input.
+        if (ready > 0 && stdin_open && (watch[1].revents & (POLLIN | POLLHUP))) {
+            if (!terminal_input_read(queue_event)) {
+                stdin_open = false;
+                app_log("Terminal input closed - the encoder still works.");
             }
-            prompt_needed = true;
-            user_stopped = true;
         }
-        previous_state = state;
 
-        if (prompt_needed && !stop_requested) {
-            printf("> ");
-            fflush(stdout);
+        control_event_t event;
+        while (!stop_requested && input_queue_pop(&event)) {
+            handle_event(event);
         }
+
+        tour_controller_tick();
+
+        // GUI: draw tour_controller_view() and the app_log lines here, once per frame.
     }
 
-    printf("\nGoodbye!\n");
-    Encoder_cleanup(); // Added Encoder_cleanup (temporary)
+    app_log("Goodbye!");
+    Encoder_cleanup();          // first: stops the thread that pushes into the queue
     audio_player_cleanup();
+    input_queue_cleanup();
     track_list_cleanup();
+    app_log_cleanup();
     return 0;
 }

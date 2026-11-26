@@ -418,7 +418,24 @@ void audio_player_adjust_volume(int delta_percent)
 void audio_player_seek_relative(int seconds)
 {
     assert(is_initialized);
-    send_command("JUMP %+ds", seconds);
+    if (!send_command("JUMP %+ds", seconds)) {
+        return;
+    }
+    // mpg123 only reports the position (@F lines) while it is playing, so a
+    // jump made while PAUSED would not show until playback resumes. Update the
+    // position here; the next @F line (once playing) corrects any difference.
+    pthread_mutex_lock(&state_mutex);
+    if (status.state != AUDIO_STOPPED) {
+        double position = status.position_sec + seconds;
+        if (position < 0.0) {
+            position = 0.0;
+        }
+        if (status.duration_sec > 0.0 && position > status.duration_sec) {
+            position = status.duration_sec;
+        }
+        status.position_sec = position;
+    }
+    pthread_mutex_unlock(&state_mutex);
 }
 
 audio_status_t audio_player_get_status(void)

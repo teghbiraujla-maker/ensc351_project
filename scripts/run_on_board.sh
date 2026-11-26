@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
-# Run one of the programs on the board (with sudo, which the SPI device needs).
+# Run one of the programs on the board (with sudo, which GPIO access for the encoder needs).
 #   scripts/run_on_board.sh tour_player
-#   scripts/run_on_board.sh joystick_test --samples 50
 #   scripts/run_on_board.sh audio_selftest
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 if [ $# -lt 1 ]; then
-    echo "Usage: $0 <tour_player|joystick_test|audio_selftest> [program arguments]"
+    echo "Usage: $0 <tour_player|audio_selftest> [program arguments]"
     exit 1
 fi
 program="$1"

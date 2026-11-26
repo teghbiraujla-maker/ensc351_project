@@ -24,7 +24,7 @@ echo "Copying to $TARGET:$BOARD_DIR ..."
 # shellcheck disable=SC2029  # BOARD_DIR is meant to expand here, on the host
 ssh "${SSH_OPTS[@]}" "$TARGET" "mkdir -p '$BOARD_DIR'"
 scp "${SSH_OPTS[@]}" \
-    "$ROOT/build/app/tour_player" "$ROOT/build/app/joystick_test" "$ROOT/build/app/audio_selftest" \
+    "$ROOT/build/app/tour_player" "$ROOT/build/app/audio_selftest" \
     "$TARGET:$BOARD_DIR/"
 if $do_audio; then
     # Replace the board's audio folder so deleted files do not linger.

@@ -29,21 +29,14 @@ endif()
 
 option(BUILD_HOST_TESTS "Build the hardware-free unit tests (use on the host, not for the board)" OFF)
 
-# Joystick wiring/polarity - change these if your joystick is wired differently
-# (or pass -DJOYSTICK_Y_UP_IS_HIGH=0 on the cmake command line).
-set(JOYSTICK_X_CHANNEL 0 CACHE STRING "ADC channel wired to the joystick's Xout")
-set(JOYSTICK_Y_CHANNEL 1 CACHE STRING "ADC channel wired to the joystick's Yout")
-set(JOYSTICK_Y_UP_IS_HIGH 1 CACHE STRING "1 if pushing the stick UP raises the ADC value, else 0")
-set(JOYSTICK_X_RIGHT_IS_HIGH 1 CACHE STRING "1 if pushing the stick RIGHT raises the ADC value, else 0")
-add_compile_definitions(
-  JOYSTICK_X_CHANNEL=${JOYSTICK_X_CHANNEL}
-  JOYSTICK_Y_CHANNEL=${JOYSTICK_Y_CHANNEL}
-  JOYSTICK_Y_UP_IS_HIGH=${JOYSTICK_Y_UP_IS_HIGH}
-  JOYSTICK_X_RIGHT_IS_HIGH=${JOYSTICK_X_RIGHT_IS_HIGH})
+# Rotary encoder (GPIO via libgpiod v2). Turn OFF to build without libgpiod,
+# e.g. on a laptop: the program then runs with terminal input only.
+option(ENABLE_ENCODER "Build the rotary encoder driver (needs libgpiod v2)" ON)
 
 find_package(Threads REQUIRED)
 
 if(BUILD_HOST_TESTS)
+  enable_testing()
   add_subdirectory(tests)
 else()
   add_subdirectory(hal)

@@ -1,15 +1,15 @@
 #include "terminal_input.h"
 #include <ctype.h>
-#include <errno.h>
-#include <poll.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <unistd.h>
+#include "app_log.h"
 
 #define LINE_CAPACITY 256
+#define MAX_TURN_STEPS 100
 
 // Bytes read from stdin but not yet turned into a line. We read with read()
 // rather than fgets() so that poll() and the buffering always agree.
@@ -36,9 +36,46 @@ static bool take_line(char *line, size_t line_size)
     return true;
 }
 
-static input_event_t translate(const char *text)
+static bool is_right(char c) { return c == '+' || c == '.' || c == '>'; }
+static bool is_left(char c)  { return c == '-' || c == ',' || c == '<'; }
+
+static int clamp_steps(long steps)
 {
-    input_event_t event = { INPUT_UNKNOWN, 0 };
+    if (steps > MAX_TURN_STEPS) return MAX_TURN_STEPS;
+    return (int)steps;
+}
+
+// "+++" -> 3 clicks right, "--" -> 2 clicks left, "+5" / "-5" -> 5 clicks.
+// Returns 0 if the word is not a turn command.
+static int parse_turn(const char *word)
+{
+    char first = word[0];
+    if (!is_right(first) && !is_left(first)) {
+        return 0;
+    }
+    int direction = is_right(first) ? 1 : -1;
+
+    if (isdigit((unsigned char)word[1])) {               // "+5"
+        char *end = NULL;
+        long steps = strtol(word + 1, &end, 10);
+        if (*end != '\0' || steps <= 0) {
+            return 0;
+        }
+        return direction * clamp_steps(steps);
+    }
+    long repeats = 0;                                    // "+++"
+    for (const char *c = word; *c != '\0'; c++) {
+        if ((direction > 0 && !is_right(*c)) || (direction < 0 && !is_left(*c))) {
+            return 0;
+        }
+        repeats++;
+    }
+    return direction * clamp_steps(repeats);
+}
+
+control_event_t terminal_input_translate(const char *text)
+{
+    control_event_t event = { CONTROL_UNKNOWN, 0 };
 
     while (isspace((unsigned char)*text)) {
         text++;
@@ -50,88 +87,69 @@ static input_event_t translate(const char *text)
         word[--length] = '\0';
     }
     if (length == 0) {
-        event.type = INPUT_NONE;          // just pressed enter
+        event.type = CONTROL_NONE;        // just pressed enter
         return event;
     }
 
-    char *end = NULL;
-    long number = strtol(word, &end, 10);
-    if (*end == '\0' && number > 0 && number < 100000) {
-        event.type = INPUT_SELECT_TRACK;
-        event.value = (int)number;
-        return event;
-    }
-
-    if (!strcasecmp(word, "p") || !strcasecmp(word, "pause") || !strcasecmp(word, "resume")) {
-        event.type = INPUT_TOGGLE_PAUSE;
-    } else if (!strcasecmp(word, "s") || !strcasecmp(word, "stop")) {
-        event.type = INPUT_STOP;
-    } else if (!strcmp(word, "+") || !strcasecmp(word, "up")) {
-        event.type = INPUT_VOLUME_UP;
-    } else if (!strcmp(word, "-") || !strcasecmp(word, "down")) {
-        event.type = INPUT_VOLUME_DOWN;
-    } else if (!strcasecmp(word, "f") || !strcasecmp(word, "forward")) {
-        event.type = INPUT_SEEK_FORWARD;
-    } else if (!strcasecmp(word, "b") || !strcasecmp(word, "back")) {
-        event.type = INPUT_SEEK_BACK;
-    } else if (!strcasecmp(word, "l") || !strcasecmp(word, "list")) {
-        event.type = INPUT_LIST;
+    int steps = parse_turn(word);
+    if (steps != 0) {
+        event.type = CONTROL_TURN;
+        event.steps = steps;
+    } else if (!strcasecmp(word, "p") || !strcasecmp(word, "press")) {
+        event.type = CONTROL_PRESS;
+    } else if (!strcasecmp(word, "x") || !strcasecmp(word, "hold")) {
+        event.type = CONTROL_LONG_PRESS;
     } else if (!strcasecmp(word, "i") || !strcasecmp(word, "info") || !strcasecmp(word, "status")) {
-        event.type = INPUT_STATUS;
+        event.type = CONTROL_STATUS;
+    } else if (!strcasecmp(word, "l") || !strcasecmp(word, "list")) {
+        event.type = CONTROL_LIST;
     } else if (!strcasecmp(word, "h") || !strcasecmp(word, "help") || !strcmp(word, "?")) {
-        event.type = INPUT_HELP;
+        event.type = CONTROL_HELP;
     } else if (!strcasecmp(word, "q") || !strcasecmp(word, "quit") || !strcasecmp(word, "exit")) {
-        event.type = INPUT_QUIT;
+        event.type = CONTROL_QUIT;
     }
     return event;
 }
 
-input_event_t terminal_input_poll(int timeout_ms)
+int terminal_input_fd(void)
 {
-    input_event_t none = { INPUT_NONE, 0 };
-    char line[LINE_CAPACITY];
+    return STDIN_FILENO;
+}
 
-    // A previous read may have delivered several lines at once.
-    if (take_line(line, sizeof(line))) {
-        return translate(line);
-    }
-
-    struct pollfd watch = { STDIN_FILENO, POLLIN, 0 };
-    int ready = poll(&watch, 1, timeout_ms);
-    if (ready < 0) {
-        return none;                      // interrupted by a signal (e.g. Ctrl-C)
-    }
-    if (ready == 0) {
-        return none;
-    }
-
+bool terminal_input_read(terminal_input_deliver_t deliver)
+{
     ssize_t got = read(STDIN_FILENO, pending + pending_length, sizeof(pending) - pending_length);
     if (got == 0) {
-        input_event_t quit = { INPUT_QUIT, 0 };   // EOF: terminal closed
-        return quit;
+        return false;                     // EOF: stdin closed
     }
-    if (got < 0) {
-        return none;
+    if (got > 0) {
+        pending_length += (size_t)got;
     }
-    pending_length += (size_t)got;
 
-    if (take_line(line, sizeof(line))) {
-        return translate(line);
+    char line[LINE_CAPACITY];
+    while (take_line(line, sizeof(line))) {
+        control_event_t event = terminal_input_translate(line);
+        if (event.type == CONTROL_NONE) {
+            continue;
+        }
+        app_log_input(line);              // so the GUI's terminal panel shows what was typed
+        deliver(event);
     }
-    return none;
+    return true;
 }
 
 const char *terminal_input_help_text(void)
 {
     return
-        "Commands:\n"
-        "  <number>      play that track (see the list)\n"
-        "  p             pause / resume\n"
-        "  s             stop\n"
-        "  + / -         volume up / down\n"
-        "  f / b         skip forward / back 10 seconds\n"
-        "  l             list the tracks\n"
-        "  i             show what is playing\n"
-        "  h             this help\n"
-        "  q             quit\n";
+        "Encoder controls (typed commands pretend to be the encoder):\n"
+        "  +  or .      turn clockwise one click    (+++ = 3 clicks, +5 = 5 clicks)\n"
+        "  -  or ,      turn counter-clockwise      (--- = 3 clicks, -5 = 5 clicks)\n"
+        "  p            press\n"
+        "  x  or hold   hold (long press, ~1 s)\n"
+        "What they do:\n"
+        "  choosing a stop:  turn = move through the list, press = play\n"
+        "  playing:          turn = volume (5% per click), press = pause, hold = stop\n"
+        "  paused:           turn = skip 5 s per click, press = resume, hold = stop\n"
+        "Debug commands:\n"
+        "  i  status    l  list the stops    h  this help    q  quit\n";
 }

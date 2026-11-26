@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time setup of a board: installs mpg123 and checks SPI / USB audio.
+# One-time setup of a board: installs mpg123 and checks libgpiod / USB audio.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 

@@ -3,18 +3,54 @@
 
 #include <stdio.h>
 
-// Seconds -> minutes and seconds:
-//   minutes = total / 60   (0-59 -> 0, 60-119 -> 1, 120-179 -> 2 ...)
-//   seconds = total % 60   (%02d pads to two digits)
+#define SECONDS_PER_HOUR 3600
+
+// Seconds -> clock text:
+//   hours   = total / 3600
+//   minutes = (total % 3600) / 60
+//   seconds = total % 60          (%02d pads to two digits)
+static void format_clock(int total, int show_hours, char *out, size_t out_size)
+{
+    if (show_hours) {
+        snprintf(out, out_size, "%d:%02d:%02d", total / SECONDS_PER_HOUR,
+                 (total % SECONDS_PER_HOUR) / 60, total % 60);
+    } else {
+        snprintf(out, out_size, "%d:%02d", total / 60, total % 60);
+    }
+}
+
+void playback_display_clock(double seconds, char *out, size_t out_size)
+{
+    int total = (seconds > 0) ? (int)seconds : 0;   // truncate, like a video player
+    format_clock(total, total >= SECONDS_PER_HOUR, out, out_size);
+}
+
 void playback_display_time(double position_sec, double duration_sec,
                            char *out, size_t out_size)
 {
     if (position_sec < 0) position_sec = 0;
     if (duration_sec < 0) duration_sec = 0;
-    int pos = (int)position_sec;      // truncate, like a video player
+    int pos = (int)position_sec;
     int dur = (int)duration_sec;
     if (dur > 0 && pos > dur) pos = dur;
-    snprintf(out, out_size, "%d:%02d/%d:%02d", pos / 60, pos % 60, dur / 60, dur % 60);
+    int show_hours = (dur >= SECONDS_PER_HOUR || pos >= SECONDS_PER_HOUR);
+
+    char pos_text[16];
+    char dur_text[16];
+    format_clock(pos, show_hours, pos_text, sizeof(pos_text));
+    format_clock(dur, show_hours, dur_text, sizeof(dur_text));
+    snprintf(out, out_size, "%s/%s", pos_text, dur_text);
+}
+
+double playback_display_progress(const audio_status_t *status)
+{
+    if (status->duration_sec <= 0) {
+        return 0.0;
+    }
+    double fraction = status->position_sec / status->duration_sec;
+    if (fraction < 0.0) return 0.0;
+    if (fraction > 1.0) return 1.0;
+    return fraction;
 }
 
 const char *playback_display_state_text(audio_state_t state)

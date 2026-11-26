@@ -1,18 +1,17 @@
 # Application programs. All hardware access goes through the HAL library.
 include_directories(include)
 
-# Main program: the audio tour player
+# Main program: the audio tour player, controlled with the rotary encoder
 add_executable(tour_player
   src/main.c
+  src/app_log.c
   src/audio_player.c
-  src/track_list.c
+  src/input_queue.c
   src/playback_display.c
-  src/terminal_input.c)
+  src/terminal_input.c
+  src/tour_controller.c
+  src/track_list.c)
 target_link_libraries(tour_player PRIVATE hal Threads::Threads)
-
-# Hardware check: live joystick display
-add_executable(joystick_test test/joystick_test.c)
-target_link_libraries(joystick_test PRIVATE hal)
 
 # Hardware check: end-to-end audio test
 add_executable(audio_selftest
