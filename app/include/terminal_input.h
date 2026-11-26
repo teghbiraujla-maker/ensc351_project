@@ -17,6 +17,9 @@ typedef enum {
     INPUT_VOLUME_DOWN,
     INPUT_SEEK_FORWARD,
     INPUT_SEEK_BACK,
+    INPUT_CURSOR_UP,       // move the highlighted stop up (encoder turned back)
+    INPUT_CURSOR_DOWN,     // move the highlighted stop down (encoder turned forward)
+    INPUT_CONFIRM,         // play the highlighted stop (encoder press)
     INPUT_LIST,
     INPUT_STATUS,
     INPUT_HELP,
