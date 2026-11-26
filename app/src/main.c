@@ -13,7 +13,8 @@
 #include <unistd.h>
 #include "audio_player.h"
 #include "hal/audio_device.h"
-#include "hal/encoder.h" // Temporary encoder verification inclusion
+#include "hal/encoder.h"
+#include "lcd_ui.h"
 #include "terminal_input.h"
 #include "track_list.h"
 
@@ -22,7 +23,6 @@
 #define SEEK_STEP_SEC    10
 
 static volatile sig_atomic_t stop_requested = 0;
-static int s_counter = 0; // Temp encoder
 
 static void handle_signal(int signal_number)
 {
@@ -112,12 +112,12 @@ static void print_usage(const char *program)
     printf("                      or $TOUR_AUDIO_DEVICE)\n");
 }
 
-// Temp encoder verification function
-static void onEncoderTurn(int direction) 
+// Called from the encoder's thread: turning it moves the highlighted stop on
+// the LCD (+1 = next, -1 = previous). See lcd_ui.c.
+static void onEncoderTurn(int direction)
 {
-    s_counter += direction;
-    printf("Encoder turned: Counter %d\n", s_counter);
-} // End temp
+    lcd_ui_move_cursor(direction);
+}
 
 int main(int argc, char *argv[])
 {
@@ -152,7 +152,12 @@ int main(int argc, char *argv[])
     }
     install_signal_handlers();
 
-    Encoder_init(onEncoderTurn); // Temp encoder initialization
+    if (!lcd_ui_init()) {
+        fprintf(stderr, "Warning: the LCD could not be started; continuing without it.\n");
+    }
+    // The boot/welcome message goes here: lcd_ui_show_message("line 1", "line 2", ms);
+
+    Encoder_init(onEncoderTurn);
 
     printf("\n=== SFU Burnaby Campus Tour ===\n");
     print_track_list();
@@ -166,6 +171,11 @@ int main(int argc, char *argv[])
 
     while (!stop_requested) {
         input_event_t event = terminal_input_poll(POLL_INTERVAL_MS);
+        if (event.type == INPUT_CONFIRM) {
+            // "Select" plays the stop that is highlighted on the LCD.
+            event.type = INPUT_SELECT_TRACK;
+            event.value = lcd_ui_cursor() + 1;
+        }
         bool prompt_needed = (event.type != INPUT_NONE);
 
         switch (event.type) {
@@ -232,9 +242,17 @@ int main(int argc, char *argv[])
         case INPUT_UNKNOWN:
             printf("Unknown command. Type h for help.\n");
             break;
+        case INPUT_CURSOR_UP:
+        case INPUT_CURSOR_DOWN:
+            break;                            // shown on the LCD only (below)
+        case INPUT_CONFIRM:                   // converted to INPUT_SELECT_TRACK above
         case INPUT_NONE:
             break;
         }
+
+        // Show the effect of this input on the LCD.
+        audio_status_t input_status = audio_player_get_status();
+        lcd_ui_on_input(event, current_track, &input_status);
 
         // Tell the user when a recording ends by itself.
         audio_state_t state = audio_player_get_status().state;
@@ -243,13 +261,19 @@ int main(int argc, char *argv[])
             audio_player_get_last_error(reason, sizeof(reason));
             if (reason[0] != '\0') {
                 printf("\nPlayback problem: %s\n", reason);
+                lcd_ui_notify("Playback problem");
             } else {
                 printf("\nFinished: %s. Choose another stop.\n", track_list_name(current_track));
+                lcd_ui_notify("Finished - pick next");
             }
             prompt_needed = true;
             user_stopped = true;
         }
         previous_state = state;
+
+        // Keep the LCD current (playback clock, volume, expiring messages).
+        audio_status_t refresh_status = audio_player_get_status();
+        lcd_ui_refresh(current_track, &refresh_status);
 
         if (prompt_needed && !stop_requested) {
             printf("> ");
@@ -258,7 +282,8 @@ int main(int argc, char *argv[])
     }
 
     printf("\nGoodbye!\n");
-    Encoder_cleanup(); // Added Encoder_cleanup (temporary)
+    Encoder_cleanup();
+    lcd_ui_cleanup();
     audio_player_cleanup();
     track_list_cleanup();
     return 0;
