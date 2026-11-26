@@ -11,6 +11,8 @@ static int current = -1;
 static bool tour_complete = false;
 static bool user_stopped = true;              // the last stop was on purpose (hold)
 static audio_state_t previous_state = AUDIO_STOPPED;
+static bool nextIsHighlighted = true;
+static void play_highlighted(void); // two additions made by TA
 
 static tour_mode_t mode_for(audio_state_t state)
 {
@@ -30,26 +32,38 @@ void tour_controller_init(const tour_player_t *player_functions)
     tour_complete = false;
     user_stopped = true;
     previous_state = player->get_status().state;
+    nextIsHighlighted = true;
 }
 
 // ---------------------------------------------------------------------------
 // Turning
 // ---------------------------------------------------------------------------
-static void move_highlight(int steps)
-{
+static void turn_to_play(int steps) {
     int count = track_list_count();
     if (count == 0) {
         app_log("No tracks to choose from. Copy MP3 files into the audio folder.");
         return;
     }
-    int target = highlighted + steps;
-    if (target < 0) target = 0;                 // stop at the ends (no wrap-around)
-    if (target > count - 1) target = count - 1;
-    if (target != highlighted) {
-        highlighted = target;
-        tour_complete = false;
+    if (highlighted < 0) {
+        highlighted = 0;
+        nextIsHighlighted = true;
     }
-    app_log("Stop %d/%d: %s", highlighted + 1, count, track_list_name(highlighted));
+    bool plays_highlighted = next_is_highlighted && steps > 0;
+    if (plays_highlighted) {
+        steps -= 1;
+    }
+    int target = highlighted + steps;
+    if (target < 0) target = 0;
+    if (target > count - 1) target = count - 1;
+
+    if (target == highlighted && !plays_highlighted) {
+        app_log(steps > 0 ? "That is the last stop." : "That is the first stop.");
+        return;
+    }
+    highlighted = target;
+    nextIsHighlighted = false;
+    tour_complete = false;
+    play_highlighted();
 }
 
 static void change_volume(int steps)
@@ -133,6 +147,7 @@ static void stop_and_choose(void)
     if (current >= 0) {
         highlighted = current;
     }
+    nextIsHighlighted = false;
     app_log("Stopped. Turn to choose a stop, press to play.");
 }
 
@@ -147,7 +162,7 @@ void tour_controller_handle(control_event_t event)
             break;
         }
         if (mode == TOUR_MODE_CHOOSING) {
-            move_highlight(event.steps);
+            turn_to_play(event.steps);
         } else if (mode == TOUR_MODE_PLAYING) {
             change_volume(event.steps);
         } else {
@@ -186,13 +201,16 @@ void tour_controller_tick(void)
         if (reason[0] != '\0') {
             app_log("Playback problem: %s", reason);
             highlighted = current;
+            nextIsHighlighted = false;
         } else if (current + 1 < track_list_count()) {
             highlighted = current + 1;
+            nextIsHighlighted = true;
             app_log("Finished: %s. Next stop: %d. %s - press to play.",
                     track_list_name(current), highlighted + 1, track_list_name(highlighted));
         } else {
             highlighted = current;
             tour_complete = true;
+            nextIsHighlighted = true;
             app_log("Finished: %s. That was the last stop - thanks for taking the tour!",
                     track_list_name(current));
         }
