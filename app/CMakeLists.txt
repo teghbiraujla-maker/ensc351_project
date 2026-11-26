@@ -7,6 +7,7 @@ add_executable(tour_player
   src/audio_player.c
   src/track_list.c
   src/playback_display.c
+  src/progress_store.c
   src/terminal_input.c)
 target_link_libraries(tour_player PRIVATE hal Threads::Threads)
 

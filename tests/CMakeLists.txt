@@ -10,7 +10,12 @@ add_executable(audio_device_test audio_device_test.c ${CMAKE_SOURCE_DIR}/hal/src
 add_executable(playback_display_test playback_display_test.c ${CMAKE_SOURCE_DIR}/app/src/playback_display.c)
 target_include_directories(playback_display_test PRIVATE ${CMAKE_SOURCE_DIR}/app/include)
 
+# Saved tour progress (file save/load, corruption handling)
+add_executable(progress_store_test progress_store_test.c ${CMAKE_SOURCE_DIR}/app/src/progress_store.c)
+target_include_directories(progress_store_test PRIVATE ${CMAKE_SOURCE_DIR}/app/include)
+
 enable_testing()
 add_test(NAME joystick_logic COMMAND joystick_logic_test)
 add_test(NAME audio_device COMMAND audio_device_test)
 add_test(NAME playback_display COMMAND playback_display_test)
+add_test(NAME progress_store COMMAND progress_store_test)
