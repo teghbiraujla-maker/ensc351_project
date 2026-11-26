@@ -85,6 +85,8 @@ scripts/run_on_board.sh tour_player
 | `f` / `b` | skip forward / back 10 seconds |
 | `l` | list the tracks |
 | `i` | show what is playing, the time, and the volume |
+| `<` / `>` | move the highlight up / down in the stop list (what the encoder does) |
+| `ok` | play the highlighted stop (what pressing the encoder does) |
 | `h` | help |
 | `q` (or Ctrl-C) | quit |
 
@@ -123,11 +125,14 @@ hal/                       hardware access only
   include/hal/spi_adc.h    MCP3208 ADC over SPI (/dev/spidev0.0)
   include/hal/joystick.h   joystick: raw values, direction, auto-calibration
   include/hal/audio_device.h   finds the USB sound card
+  include/hal/encoder.h    rotary encoder (libgpiod)
+  include/hal/lcd.h        LCD as a grid of text (frame in, text out)
 app/
   src/main.c               the tour player (menu loop)
   src/audio_player.c       plays MP3s via ALSA (controls the mpg123 player)
   src/track_list.c         finds and names the MP3 files
   src/terminal_input.c     typed commands -> input events (temporary input source)
+  src/lcd_ui.c             what the LCD shows for every input (screens, highlight, messages)
   test/                    joystick_test, audio_selftest
 tests/                     hardware-free unit tests (run on the host)
 audio/                     the MP3 files
@@ -143,6 +148,32 @@ cmake/aarch64-toolchain.cmake
 - **Audio back end:** `audio_player.h` hides the fact that `mpg123` does the decoding. If you ever want in-process decoding (libmpg123 + ALSA), only `audio_player.c` changes.
 
 
+    LCD screen
+
+`lcd_ui.c` mirrors every input on the LCD (default 20x4; change with `-DLCD_COLS=.. -DLCD_ROWS=..`, minimum 16x4).
+
+```
+stop list                  now playing
+Select stop 2/5            PLAYING 2/5
+ * 1 Welcome to SFU        Library
+> 2 Library                02:33 / 04:07
+  3 Convocation Mall       Vol 70% [#######---]
+```
+`>` is the highlighted stop and `*` is the one playing.
+
+| Input | LCD |
+|---|---|
+| Turn the encoder (`<` `>`) | Moves the `>` highlight (wraps at the ends). The list shows for 5 s even while a recording plays |
+| Select (`ok`, or a track number) | Shows the now-playing screen and "Playing: <name>"; "No track N" if invalid |
+| Pause / resume | Header says PAUSED, message "Paused" / "Resumed"; the clock follows the player |
+| Stop | "Stopped", back to the stop list |
+| Volume +/- | "Volume N%" (the bar is always on the now-playing screen) |
+| Skip f / b | "Skipped forward" / "Skipped back" |
+| Recording ends | "Finished - pick next" |
+| `l` / `i` / `h` | List, now-playing, or help screen for a few seconds |
+
+For the boot welcome message call `lcd_ui_show_message("line 1", "line 2", ms)` in `main.c` (marked there). `hal/lcd.c` has no hardware driver yet: it can print each frame to the terminal with `TOUR_LCD_MIRROR=1`, and the real display code only has to replace `lcd_init`, `lcd_show_frame` and `lcd_cleanup`.
+
     Tests
 
 Hardware-free tests (joystick direction logic against a fake ADC, and sound card discovery) run on the host:
@@ -151,5 +182,7 @@ cmake -S . -B build-host -DBUILD_HOST_TESTS=ON
 cmake --build build-host
 ./build-host/tests/joystick_logic_test
 ./build-host/tests/audio_device_test
+./build-host/tests/lcd_ui_test
 ```
+(`lcd_ui_test` checks every screen above against a fake LCD.)
 

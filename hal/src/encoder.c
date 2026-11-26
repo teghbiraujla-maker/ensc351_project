@@ -19,7 +19,7 @@
 #define EDGE_WAIT_TIMEOUT_NS 100000000LL
 #define INVERT_DIRECTION false
 
-enum {STATE_START, STATE_CCW_FINAL, STATE_CW_BEGIN, 
+enum {STATE_START, STATE_CW_FINAL, STATE_CW_BEGIN, 
         STATE_CW_NEXT, STATE_CCW_BEGIN, STATE_CCW_FINAL,
         STATE_CCW_NEXT, STATE_COUNT};
 
@@ -70,7 +70,7 @@ void Encoder_init(Encoder_callback_t onTurn) {
     assert(onTurn != NULL);
     s_onTurn = onTurn;
     if (!findChipWithEncoderLines()) {
-        fprintf(stderr, "ERROR: GPIO %s and %s not found anywhere", 
+        fprintf(stderr, "ERROR: GPIO %s and %s not found anywhere\n", 
         ENCODER_LINE_A_NAME, ENCODER_LINE_B_NAME);
         exit(EXIT_FAILURE);
     }

@@ -41,6 +41,11 @@ add_compile_definitions(
   JOYSTICK_Y_UP_IS_HIGH=${JOYSTICK_Y_UP_IS_HIGH}
   JOYSTICK_X_RIGHT_IS_HIGH=${JOYSTICK_X_RIGHT_IS_HIGH})
 
+# LCD size in characters (change if your display is not 20x4; lcd_ui needs at least 16x4).
+set(LCD_COLS 20 CACHE STRING "LCD width in characters")
+set(LCD_ROWS 4 CACHE STRING "LCD height in lines")
+add_compile_definitions(LCD_COLS=${LCD_COLS} LCD_ROWS=${LCD_ROWS})
+
 find_package(Threads REQUIRED)
 
 if(BUILD_HOST_TESTS)

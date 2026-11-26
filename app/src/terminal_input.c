@@ -74,6 +74,12 @@ static input_event_t translate(const char *text)
         event.type = INPUT_SEEK_FORWARD;
     } else if (!strcasecmp(word, "b") || !strcasecmp(word, "back")) {
         event.type = INPUT_SEEK_BACK;
+    } else if (!strcmp(word, "<") || !strcasecmp(word, "prev")) {
+        event.type = INPUT_CURSOR_UP;
+    } else if (!strcmp(word, ">") || !strcasecmp(word, "next")) {
+        event.type = INPUT_CURSOR_DOWN;
+    } else if (!strcasecmp(word, "o") || !strcasecmp(word, "ok") || !strcasecmp(word, "select")) {
+        event.type = INPUT_CONFIRM;
     } else if (!strcasecmp(word, "l") || !strcasecmp(word, "list")) {
         event.type = INPUT_LIST;
     } else if (!strcasecmp(word, "i") || !strcasecmp(word, "info") || !strcasecmp(word, "status")) {
@@ -130,6 +136,8 @@ const char *terminal_input_help_text(void)
         "  s             stop\n"
         "  + / -         volume up / down\n"
         "  f / b         skip forward / back 10 seconds\n"
+        "  < / >         move the highlight up / down (like turning the encoder)\n"
+        "  ok            play the highlighted stop (like pressing the encoder)\n"
         "  l             list the tracks\n"
         "  i             show what is playing\n"
         "  h             this help\n"
