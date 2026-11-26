@@ -48,7 +48,7 @@ static void turn_to_play(int steps) {
         highlighted = 0;
         nextIsHighlighted = true;
     }
-    bool plays_highlighted = next_is_highlighted && steps > 0;
+    bool plays_highlighted = nextIsHighlighted && steps > 0;
     if (plays_highlighted) {
         steps -= 1;
     }
