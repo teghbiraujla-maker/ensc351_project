@@ -18,6 +18,19 @@ add_executable(tour_controller_test tour_controller_test.c
   ${CMAKE_SOURCE_DIR}/app/src/app_log.c)
 target_link_libraries(tour_controller_test PRIVATE Threads::Threads)
 
+# Saved tour progress: file save/load, corruption handling
+add_executable(progress_store_test progress_store_test.c ${CMAKE_SOURCE_DIR}/app/src/progress_store.c)
+
+# Save / resume behaviour against a fake audio player
+add_executable(tour_progress_test tour_progress_test.c
+  ${CMAKE_SOURCE_DIR}/app/src/tour_progress.c
+  ${CMAKE_SOURCE_DIR}/app/src/progress_store.c
+  ${CMAKE_SOURCE_DIR}/app/src/tour_controller.c
+  ${CMAKE_SOURCE_DIR}/app/src/playback_display.c
+  ${CMAKE_SOURCE_DIR}/app/src/track_list.c
+  ${CMAKE_SOURCE_DIR}/app/src/app_log.c)
+target_link_libraries(tour_progress_test PRIVATE Threads::Threads)
+
 # Typed debug commands -> encoder-style events
 add_executable(terminal_input_test terminal_input_test.c
   ${CMAKE_SOURCE_DIR}/app/src/terminal_input.c
@@ -35,3 +48,5 @@ add_test(NAME playback_display COMMAND playback_display_test)
 add_test(NAME tour_controller COMMAND tour_controller_test)
 add_test(NAME terminal_input COMMAND terminal_input_test)
 add_test(NAME input_queue COMMAND input_queue_test)
+add_test(NAME progress_store COMMAND progress_store_test)
+add_test(NAME tour_progress COMMAND tour_progress_test)

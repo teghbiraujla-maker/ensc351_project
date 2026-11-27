@@ -76,6 +76,12 @@ void tour_controller_handle(control_event_t event);
 // Call once per main-loop iteration: notices when a track ends by itself.
 void tour_controller_tick(void);
 
+// Start stop track_index (0-based) at position_sec, as if it had been playing
+// all along. Used to continue after a restart. If position_sec is not inside the
+// recording the stop starts from 0:00. Returns false (changing nothing) if the
+// stop cannot be played. Waits up to ~3 s for the player to learn the length.
+bool tour_controller_resume(int track_index, double position_sec);
+
 tour_view_t tour_controller_view(void);
 
 const char *tour_controller_mode_name(tour_mode_t mode);

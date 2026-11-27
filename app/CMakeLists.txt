@@ -8,8 +8,10 @@ add_executable(tour_player
   src/audio_player.c
   src/input_queue.c
   src/playback_display.c
+  src/progress_store.c
   src/terminal_input.c
   src/tour_controller.c
+  src/tour_progress.c
   src/track_list.c)
 target_link_libraries(tour_player PRIVATE hal Threads::Threads)
 
