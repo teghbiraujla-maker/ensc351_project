@@ -1,201 +1,258 @@
 # SFU Burnaby Campus Tour
 
-An interactive audio guide for the BeagleY-AI, controlled with a single rotary encoder (turn + push button).
+An interactive audio guide for the BeagleY-AI with a 7" screen, a rotary encoder and a joystick. It starts by itself at power-on and picks up where it left off.
 
 | Program | What it does |
 |---|---|
-| `tour_player` | The main program. Choose a tour stop with the encoder, press to play, then control volume / pause / skip. Typed commands over SSH can stand in for the encoder (for debugging). |
-| `audio_selftest` | Plays a file and checks play / pause / resume / volume / stop. Use it to confirm the sound path. |
+| `tour_player` | The tour. Choose stops with the encoder, play/pause, control volume and skip with the joystick, read directions between stops. |
+| `display_test` | Draws a test pattern on the screen. Use it to check the screen wiring. |
+| `joystick_test` | Live joystick readings (X, Y, direction, button). Use it to check the joystick wiring. |
+| `audio_selftest` | Plays a file and checks play / pause / resume / volume / stop. Use it to check the sound path. |
 
-Everything is written in C and built with CMake. Hardware access is isolated in `hal/`, the application logic is in `app/`.
+Everything is written in C and built with CMake. Hardware access is in `hal/`, the application logic is in `app/`.
 
-## 1. One-time setup
+## 1. Wiring
 
-Your board needs to be reachable by SSH, with the rotary encoder wired (see section 4) and the USB audio adapter plugged in.
+All header pins are physical pin numbers on the BeagleY-AI's 40-pin header (Raspberry Pi layout: pin 1 = 3.3 V corner, odd pins in one row, even pins in the other). **All grounds are connected together.**
 
-### 1a. Build tools on the host
+### Header summary
+
+| Pin | Signal | Goes to |
+|---|---|---|
+| 1 | 3.3 V | ADC VDD + VREF, joystick Vcc |
+| 2 | 5 V | RA8875 VIN |
+| 6, 9, 14, 20 | GND | RA8875, ADC + joystick, encoder common, encoder button |
+| 11 | GPIO17 | Encoder A |
+| 13 | GPIO27 | Encoder B |
+| 15 | GPIO22 | Encoder button |
+| 16 | GPIO23 | RA8875 RST |
+| 18 | GPIO24 | RA8875 WAIT |
+| 19 | SPI0 MOSI | ADC DIN **and** RA8875 MOSI |
+| 21 | SPI0 MISO | ADC DOUT only (see RA8875 below) |
+| 23 | SPI0 SCK | ADC CLK **and** RA8875 SCK |
+| 24 | SPI0 CE0 | ADC CS → `/dev/spidev0.0` |
+| 26 | SPI0 CE1 | RA8875 CS → `/dev/spidev0.1` |
+| 29 | GPIO5 | Joystick SEL (button) |
+
+### MCP3208 ADC (for the joystick)
+
+| ADC pin | Connect to |
+|---|---|
+| 1 (CH0) | Joystick Xout |
+| 2 (CH1) | Joystick Yout |
+| 9 (DGND), 14 (AGND) | GND |
+| 10 (CS) | Pin 24 |
+| 11 (DIN) | Pin 19 |
+| 12 (DOUT) | Pin 21 |
+| 13 (CLK) | Pin 23 |
+| 15 (VREF), 16 (VDD) | 3.3 V (pin 1) |
+
+Put a 0.1 µF capacitor from VDD (pin 16) to GND close to the chip, so the screen's noise doesn't make the joystick readings jumpy.
+
+### Joystick
+
+Vcc → 3.3 V (**not 5 V**: the outputs must stay within the ADC's 3.3 V reference). GND → GND. Xout → ADC CH0, Yout → ADC CH1, SEL → pin 29. The internal pull-up is turned on in software, so no resistor is needed.
+
+### Rotary encoder
+
+A → pin 11, B → pin 13, common (middle pin) → GND (pin 14). Push switch: one leg → pin 15, the other → GND (pin 20).
+
+### RA8875 screen driver board
+
+| RA8875 pin | Connect to |
+|---|---|
+| VIN | 5 V (pin 2) |
+| GND | GND (pin 6) |
+| SCK | Pin 23 |
+| MOSI | Pin 19 |
+| CS | Pin 26 |
+| RST | Pin 16 |
+| WAIT | Pin 18 |
+| **MISO** | **Not connected** |
+| 3Vo, LITE, INT, Y+, Y-, X-, X+ | Not connected |
+
+- **MISO:** boards made before "Rev E" (Aug 2023) don't release MISO when they're not selected, which would corrupt the joystick readings. The driver never reads from the screen, so MISO isn't needed on any revision.
+- **3Vo** is the board's own 3.3 V *output*. Never connect it to the BeagleY-AI's 3.3 V.
+- **The 7" panel** connects to the RA8875 board with the 40-pin ribbon cable.
+- **Power:** use a good 5 V / 3 A supply for the BeagleY-AI. The backlight draws far more than everything else.
+
+## 2. One-time setup
+
+### 2a. Build tools on the host
 
 ```
 sudo apt install cmake gcc-aarch64-linux-gnu
-```
-
-The encoder uses **libgpiod v2**, so the host also needs the ARM64 version of it to cross-compile:
-
-```
 sudo dpkg --add-architecture arm64
 sudo apt update
 sudo apt install libgpiod-dev:arm64
 ```
 
-Your host's libgpiod must be version 2.x (Debian 13 / Ubuntu 24.10 or newer). If you can't get it, build without the encoder: set `CMAKE_EXTRA_ARGS="-DENABLE_ENCODER=OFF"` in `config.sh`. Everything else still works with typed commands.
+GPIO (encoder, joystick button, screen reset) uses **libgpiod v2**, which needs Debian 13 / Ubuntu 24.10 or newer on the host. Without it, set `CMAKE_EXTRA_ARGS="-DENABLE_GPIO=OFF"` in `config.sh`: the screen can't be reset and the encoder and joystick button won't work, but everything else does.
 
-### 1b. Personal settings file
+### 2b. Personal settings file
 
 ```
 cp scripts/config.sh.example scripts/config.sh
 nano scripts/config.sh
 ```
 
-`config.sh` is git-ignored (see `.gitignore`), so everyone has their own. Set these values:
+`config.sh` is git-ignored, so everyone has their own. Set these values:
+- `BOARD_USER`: your username on the board.
+- `BOARD_HOST`: the board's IP address (`192.168.7.2` over USB-C).
+- `BOARD_DIR`: leave as `campus_tour`.
+- `CMAKE_EXTRA_ARGS`: usually empty.
 
-- `BOARD_USER`: your username on the board (what you type in `ssh <name>@192.168.7.2`).
-- `BOARD_HOST`: the board's IP address. `192.168.7.2` if the board is connected to your computer by USB-C.
-- `BOARD_DIR`: folder on the board that receives the programs. Leave as `campus_tour` (created automatically in your home folder).
-- `CMAKE_EXTRA_ARGS`: optional build options, e.g. `-DENABLE_ENCODER=OFF`. Usually empty.
+Check that you can log in first: `ssh <BOARD_USER>@<BOARD_HOST>`. `ssh-copy-id` stops the password prompts.
 
-Check that you can log in before going on: `ssh <BOARD_USER>@<BOARD_HOST>` (type `exit` to come back). `ssh-copy-id <BOARD_USER>@<BOARD_HOST>` stops it asking for the password every time.
+### 2c. Set up the board
 
-### 1c. Set up the board
+SPI must be enabled first (course SPI guide, section 1: the `k3-am67a-beagley-ai-spidev0.dtbo` overlay). Then:
 
 ```
 scripts/setup_board.sh
 ```
 
-This installs `mpg123` and `alsa-utils` on the board (the board needs internet for this), then checks that the libgpiod v2 library is present and that the USB audio adapter is detected. Fix anything it reports as `PROBLEM` before continuing.
+This installs `mpg123` and `alsa-utils`, then checks for:
+- libgpiod v2,
+- both SPI devices (`spidev0.0` for the ADC, `spidev0.1` for the screen),
+- the USB audio adapter.
 
-If `apt` complains about the BeagleBoard package server ("Mirror sync in progress"), wait a few minutes and run the script again.
+Fix anything it reports as `PROBLEM`.
 
-## 2. Build and copy to the board
-
-```
-scripts/deploy.sh
-```
-
-This builds (cross-compiles) and copies the two programs and the `audio/` folder to `BOARD_DIR` on the board. Options: `--no-build` (just copy) and `--no-audio` (skip the audio files, which are the big part).
-
-## 3. Run it
-
-All programs are started from your host with `scripts/run_on_board.sh`. It logs in over SSH and runs them with `sudo`, because GPIO access for the encoder needs root. It may ask for the board's password.
-
-### Step 1: audio
+## 3. Build, copy, check the hardware
 
 ```
-scripts/run_on_board.sh audio_selftest
+scripts/deploy.sh                          # build, then copy the programs + audio to the board
+scripts/run_on_board.sh display_test       # colour bars, a triangle and 4 text sizes on the screen
+scripts/run_on_board.sh display_test --stress   # repeats the tour's kind of drawing to show up glitches
+scripts/run_on_board.sh joystick_test      # move the stick / press it
+scripts/run_on_board.sh audio_selftest     # every line should say PASS
+scripts/run_on_board.sh tour_player        # the tour, with typed commands available
 ```
 
-You should hear about five seconds of a tone with a short silence in the middle, and every line should say `PASS`.
+`run_on_board.sh` runs programs with `sudo`, because GPIO and SPI need root. If the tour service (section 5) is running, it's stopped first, so the two don't fight over the hardware.
 
-### Step 2: the player
+## 4. Using the tour
 
-```
-scripts/run_on_board.sh tour_player
-```
+| Control | What it does |
+|---|---|
+| **Knob: turn** | Move the highlight in the stop list. Never changes what is playing. |
+| **Knob: press** | Pause / resume. If nothing is playing, play the highlighted stop. |
+| **Knob: hold 1 s** | End the current track (nothing else). |
+| **Stick: up / down** | Volume ±5%, repeating every 0.5 s while held. The stick must be pushed most of the way (70%) before anything happens. |
+| **Stick: right / left** | Skip forward / back. While held, the bar and time preview the new spot (amber), at 10 s per second held. Letting go jumps there. Never before 0:00 or past 1 s before the end. |
+| **Stick: press** | Show the directions to the highlighted stop, or close the popup. |
 
-#### Encoder controls
+- **To switch tracks while one is playing:** turn to highlight the new stop, hold the knob to end the current track, then press to play.
+- **When a track ends by itself:** the next stop is highlighted and the directions to it pop up. Press the stick to close them, then press the knob to play. After the last stop, a "Tour complete" popup appears.
+- **Choosing a stop out of order** never shows directions automatically.
+- **While a popup is open,** only the stick press (close) and the knob press (pause / resume a playing track) work.
 
-| Mode | Turn | Press | Hold (~1 s) |
-|---|---|---|---|
-| **Choosing a stop** (nothing playing) | Move through the list (stops at the first / last stop) | Play the highlighted stop | Nothing |
-| **Playing** | Volume ±5% per click | Pause | Stop, back to the list |
-| **Paused** | Skip ±5 s per click (never past 1 s before the end) | Resume | Stop, back to the list |
+**Saving.** The stop, position, volume and highlight are saved every 5 s while playing, and at once when they change, to `tour_state.txt` next to the program. Each save writes a new file and renames it over the old one, so pulling the power is safe. After a restart, the tour comes back **paused** at the saved spot: press the knob to continue. Delete `tour_state.txt` to start fresh.
 
-When a recording ends by itself, the **next** stop is highlighted ("Next stop: … press to play"). Nothing starts on its own. After the last stop, the player says the tour is complete.
-
-#### Typed commands (debugging without the encoder)
-
-Typed commands pretend to be the encoder, so you can test everything over SSH. Type the command and press Enter:
+**Typed commands (debugging).** When started with `run_on_board.sh`, typed commands imitate the devices. `h` lists them:
 
 | Type | Same as |
 |---|---|
-| `+` or `.` | one click clockwise (`+++` = 3 clicks, `+5` = 5 clicks) |
-| `-` or `,` | one click counter-clockwise (`---` = 3 clicks, `-5` = 5 clicks) |
-| `p` | press |
-| `x` or `hold` | hold (long press) |
-| `i` | show the mode, track, time, volume and what turning does right now |
-| `l` | list the stops (`>` highlighted, `*` playing) |
-| `h` | help |
-| `q` (or Ctrl-C) | quit |
+| `+` / `-` (`+++`, `+5`) | Knob turn |
+| `p` / `x` | Knob press / hold |
+| `u` / `d` (`u3`) | Stick up / down |
+| `f` / `b` (`f20` = 20 s) | Stick right / left, then let go |
+| `g` | Stick press |
+| `i`, `l`, `h`, `q` | Status, list of stops, help, quit |
 
-If the encoder is not found (not wired, wrong pins, built with `ENABLE_ENCODER=OFF`), the player prints `Encoder not available - use typed commands instead` and keeps running.
+**Options:**
+- `--audio-dir DIR`
+- `--device ALSA_DEVICE`
+- `--log FILE`: timestamped messages; the file restarts past 1 MB.
+- `--state FILE`
+- `--no-display`
+- `--spi-hz HZ`: screen SPI clock, default 500 kHz.
 
-Options:
-- `--audio-dir DIR`: folder of MP3s.
-- `--device ALSA_DEVICE`: e.g. `plughw:1,0`.
-- `--log FILE`: also append every message, with a timestamp, to FILE (useful for debugging the GUI).
+## 5. Start at power-on
 
-Example: `scripts/run_on_board.sh tour_player --log tour.log`.
+```
+scripts/service.sh install     # starts now and at every boot; restarts it if it crashes
+scripts/service.sh log         # watch its messages live
+scripts/service.sh stop        # until the next boot (start / restart / status also work)
+scripts/service.sh uninstall   # stop starting at boot
+```
 
-## 4. Encoder wiring
+The service runs `tour_player --log tour.log` from `BOARD_DIR`, with no keyboard input. `scripts/deploy.sh` stops it while copying and starts it again afterwards.
 
-| Encoder pin | BeagleY-AI line |
-|---|---|
-| A (CLK) | `GPIO16` |
-| B (DT) | `GPIO17` |
-| Push button (SW) | `GPIO18`: the other side of the switch goes to GND (internal pull-up, active low) |
-| GND | GND |
+## Background repair
 
-The pins are set by name at the top of `hal/src/encoder.c`. If clockwise turns go the wrong way, set `INVERT_DIRECTION` to `true` there. The long-press time is `ENCODER_LONG_PRESS_MS` in `hal/include/hal/encoder.h`.
+Breadboard wiring occasionally corrupts a drawing command, which shows up as a streak, a wrong colour or misplaced text. To repair this, the tour quietly repaints one small piece of the screen every 0.2 s (18 pieces for the main screen; 4–9 for a popup), so the whole screen is repainted about every 3.6 seconds. Pieces never overlap, and text is drawn with its own background, so repainting identical content is invisible: nothing is erased first, and there's no flicker. Each step takes at most about 0.1 s, so the controls stay responsive. The step interval is `GUI_REFRESH_STEP_MS` in `app/include/gui.h`.
 
-## Adding the real tour audio
+## Adding recordings and directions
 
-Put the MP3 files in the `audio/` folder of the project and run `scripts/deploy.sh`. Name them with a number first so they play in order: `01_Welcome_to_SFU.mp3`, `02_Academic_Quadrangle.mp3`, … The list shows "Welcome to SFU", "Academic Quadrangle", and so on. Nothing else needs to change: the list, the highlight limits and the "next stop" all come from the files that are there. Delete the `*_Test_Tone.mp3` placeholders when real recordings arrive.
+Put the MP3s in `audio/`, named with a number first so they sort in order: `01_Transportation_Centre.mp3`, `02_WAC_Bennett.mp3`, … The list shows "Transportation Centre", "WAC Bennett", and so on.
+
+**Directions** to stop N (from stop N-1) go in a text file with the same name: `03_Convo_and_DFA.txt` next to `03_Convo_and_DFA.mp3`.
+- If the file is missing, the popup shows "temp directions to location N".
+- Stop 1 has no directions.
+- Blank lines start new paragraphs.
+- Text pasted from Word or Google Docs is fine: curly quotes and dashes are converted for the screen's font.
+- About 250 characters fit in large text; longer text switches to the smaller font automatically.
+
+Then run `scripts/deploy.sh`. No code changes are needed for new recordings or directions.
 
 ## Troubleshooting
 
 | Symptom | Likely cause and fix |
 |---|---|
-| `Permission denied` when starting a script | Run once: `chmod +x scripts/*.sh`. |
-| `No scripts/config.sh yet` | Do step 1b. |
-| `Cannot reach name@192.168.7.2` | Board still booting (wait 60 s), wrong `BOARD_USER` / `BOARD_HOST`, or the USB network is not set up. Try `ssh` by hand. |
-| CMake: `libgpiod (v2) not found for this compiler` | Do the libgpiod part of step 1a, or build with `-DENABLE_ENCODER=OFF`. |
-| `encoder: GPIO lines GPIO16 and GPIO17 not found` | Wrong line names for your board, or the pins are claimed by another function. Check with `gpioinfo` on the board. |
-| `encoder: unable to request GPIO lines` | Not run with `sudo`, or another program is using the pins. |
-| Turning works but pressing does nothing | Button not wired to `GPIO18` / GND. The player prints `button line GPIO18 not available` at start if the pin is missing. |
-| `could not start 'mpg123'` | Run `scripts/setup_board.sh` (installs it). |
-| `Audio device: default (no USB audio adapter found...)` | Adapter not plugged in or not detected: `aplay -l` on the board. |
-| Plays but no sound | Wrong output device (use `--device`), or the speakers/headphones are not plugged into the adapter. Check the volume with `i`. |
-| `Playback problem: ... Device or resource busy` | Another program is using the sound card. Make sure no old `mpg123` is running: `pkill mpg123`. |
-| Build error `aarch64-linux-gnu-gcc: not found` | Step 1a. |
+| Screen stays dark | Check VIN is on 5 V, GND, and that the ribbon cable is fully in and latched. Check RST (pin 16) and CS (pin 26). Run `display_test`. |
+| Screen lights up but shows noise or wrong colours | Signal problem on the SPI wires: keep them short, then try `display_test --spi-hz 250000`. If that works, run the tour with the same `--spi-hz`. |
+| Occasional streaks, wrong colours or misplaced text in the tour | Bit errors on the SPI wires. The tour repairs these by itself within about 4 seconds (see "Background repair"), but fewer errors is still better. Run `display_test --stress` (and try `--spi-hz 250000`): anything outside the bar, the rows and the counter is a corrupted command. Fixes, in order: shorter SPI wires; a GND wire running right next to SCK; a 100 Ω resistor in series with SCK at the BeagleY-AI end (stops "ringing" that the screen reads as extra clock pulses); a lower `--spi-hz`. |
+| `ra8875: cannot open /dev/spidev0.1` | SPI not enabled (section 2c), or not run with `sudo`. |
+| Joystick does nothing, or directions are reversed | Run `joystick_test`. For reversed axes, build with `-DJOYSTICK_Y_UP_IS_HIGH=0` / `-DJOYSTICK_X_RIGHT_IS_HIGH=0` in `CMAKE_EXTRA_ARGS`. |
+| Joystick acts on its own (e.g. volume keeps rising) | The stick was held or bumped while the program started: its resting position is measured at start-up. Restart without touching it. The dead zone (stick must be pushed 70% of the way) is `JOYSTICK_PRESS_FRACTION` in `hal/include/hal/joystick.h`. |
+| Joystick readings jump around | Add the 0.1 µF capacitor at the ADC, and check that Vcc is 3.3 V. |
+| `gpio: line GPIO17 not found` | Line names differ on your image: check with `gpioinfo` on the board and edit the names at the top of `hal/src/encoder.c` / `hal/include/hal/joystick.h` / `hal/include/hal/ra8875.h`. |
+| `gpio: cannot request line` | Not run with `sudo`, or the service is still running (`scripts/service.sh stop`). |
+| Turning the knob goes the wrong way | Swap the A and B wires, or set `INVERT_DIRECTION` to `true` in `hal/src/encoder.c`. |
+| `Text file busy` while deploying | A hand-started `tour_player` is still running on the board. Quit it (`q`), then deploy again. |
+| `could not start 'mpg123'` | Run `scripts/setup_board.sh`. |
+| `Audio device: default (no USB audio adapter found...)` | Adapter not detected: check with `aplay -l` on the board. |
+| `Playback problem: ... Device or resource busy` | Another program has the sound card: `sudo pkill mpg123`, or stop the service. |
+| CMake: `libgpiod (v2) not found` | Section 2a, or build with `-DENABLE_GPIO=OFF`. |
 
 ## Project layout
 
 ```
 hal/                             hardware access only
-  include/hal/encoder.h          rotary encoder + button (libgpiod v2), turn / short / long press
-  include/hal/press_detector.h   button debounce and long-press timing (pure logic, unit tested)
+  include/hal/gpio.h             one GPIO line by name, on whichever gpiochip has it (libgpiod v2)
+  include/hal/encoder.h          rotary encoder + button: turn / short / long press
+  include/hal/joystick.h         joystick direction (auto-calibrating) + SEL button
+  include/hal/spi_adc.h          MCP3208 ADC on /dev/spidev0.0
+  include/hal/ra8875.h           RA8875 screen on /dev/spidev0.1: rectangles, triangles, text
+  include/hal/press_detector.h   button debounce and long-press timing (pure logic)
   include/hal/audio_device.h     finds the USB sound card
-  src/encoder_stub.c             used instead of encoder.c when ENABLE_ENCODER=OFF
 app/
-  src/main.c                     main loop: inputs -> controller, once per frame
-  src/tour_controller.c          the encoder control scheme; tour_controller_view() for the GUI
-  include/controls.h             the control events every input source produces
-  src/input_queue.c              thread-safe queue: encoder thread -> main loop
-  src/terminal_input.c           typed commands -> the same control events (debugging)
-  src/app_log.c                  all messages: kept in memory for the GUI, echoed, optional log file
-  src/playback_display.c         time text (m:ss / h:mm:ss) and progress fraction
-  src/audio_player.c             plays MP3s via ALSA (controls the mpg123 player)
-  src/track_list.c               finds and names the MP3 files
-  test/                          audio_selftest
+  src/main.c                     main loop: inputs -> controller -> screen -> save, every 100 ms
+  src/tour_controller.c          the control rules; tour_controller_view() for the screen
+  src/gui.c                      the screen layout: flicker-free pieces, redraws only what changed,
+                                 plus the background repair
+  src/joystick_input.c           joystick -> control events (repeat rates, skip release)
+  src/guide_text.c               directions from the .txt files
+  src/saved_state.c              save / resume file (atomic writes)
+  src/input_queue.c              thread-safe queue: device threads -> main loop
+  src/terminal_input.c           typed commands -> the same control events
+  src/app_log.c                  all messages (terminal / service log / --log file)
+  src/audio_player.c             plays MP3s via ALSA (controls mpg123)
+  src/playback_display.c         m:ss / h:mm:ss text, progress fraction
+  src/track_list.c               finds and names the MP3s
+  include/canvas.h               drawing interface between gui.c and the screen
+  test/                          display_test, joystick_test, audio_selftest
 tests/                           hardware-free unit tests (run on the host)
-audio/                           the MP3 files
-scripts/                         config.sh.example, build.sh, deploy.sh, run_on_board.sh, setup_board.sh
-cmake/aarch64-toolchain.cmake
+tools/render_preview.py          turns gui_test's drawing data into PNG previews of the screen
+audio/                           the MP3s and their .txt directions
+scripts/                         build, deploy, run, setup, service
 ```
-
-## How the pieces fit (and where the GUI goes)
-
-```
-encoder thread --push--> input_queue --+
-typed commands ------------------------+--> main loop --> tour_controller --> audio_player
-                                                 |               |
-                                                 |      tour_controller_view()
-                                                 +--> (GUI) draws the view + app_log lines every frame
-```
-
-- **GUI:** once per frame (`FRAME_INTERVAL_MS`, 100 ms), draw from `tour_controller_view()`:
-  - `mode`: choosing / playing / paused, for the play/pause indicator.
-  - `focus`: which widget to highlight, i.e. what turning changes (track list, volume bar or progress bar).
-  - `highlighted`, `current`, `track_count`: for the track list.
-  - `audio.position_sec`, `audio.duration_sec`, `audio.volume_percent`: for the time, progress bar and volume bar. Use `playback_display_time()` and `playback_display_progress()` to format them.
-  - The terminal panel shows the lines from `app_log_get_line()`. `app_log_version()` changes whenever a new line arrives.
-
-  Because everything is redrawn from the player's status, pausing, skipping and tracks ending always show correctly.
-- **Another input device:** make it push the same `control_event_t` values into `input_queue`. Nothing else changes.
-- **Audio back end:** `audio_player.h` hides the fact that `mpg123` does the decoding.
 
 ## Tests
 
-Hardware-free tests run on the host. They need no libgpiod, sound card or encoder:
+Hardware-free tests run on the host. They need no libgpiod, sound card, screen, encoder or joystick:
 
 ```
 cmake -S . -B build-host -DBUILD_HOST_TESTS=ON
@@ -205,9 +262,18 @@ ctest --test-dir build-host --output-on-failure
 
 | Test | Checks |
 |---|---|
-| `tour_controller_test` | Every rule in the encoder controls table, against a fake player: highlight limits, volume steps, skip limits, hold to stop, next stop after a track ends, errors. |
-| `press_detector_test` | Button debounce, short press, long press fires once while held. |
-| `terminal_input_test` | Typed commands → control events. |
-| `input_queue_test` | Order, capacity, wake-up fd, 1000 events pushed from another thread. |
-| `playback_display_test` | `m:ss` / `h:mm:ss` text and the progress fraction. |
-| `audio_device_test` | USB sound card discovery. |
+| `tour_controller_test` | Every control rule, against a fake player: highlight vs playing, pause, hold to end, volume, skip preview and single jump, end limit, popups and what works behind them, next-stop directions, tour complete, out-of-order stops, errors, resume. |
+| `joystick_input_test` | Immediate first step, 0.5 s / 0.1 s repeats, one release per skip, one guide event per press. |
+| `gui_test` | Every screen stays inside 800 × 480 with no text overflow; word wrap; only changed parts are redrawn; one repair cycle repaints every pixel without ever erasing visible text (no flicker). `--dump DIR` writes preview data. |
+| `saved_state_test` | Save/load round trip, nonsense values, no leftover temporary file, when to save. |
+| `guide_text_test` | `.txt` lookup, placeholder, stop 1, Word-style characters converted. |
+| `press_detector_test` | Debounce, short press, long press fires once while held. |
+| `joystick_logic_test` | Joystick direction from ADC values (fake ADC). |
+| `terminal_input_test`, `input_queue_test`, `playback_display_test`, `audio_device_test` | Typed commands, the event queue, time formatting, sound card discovery. |
+
+**Screen previews on a laptop:**
+```
+./build-host/tests/gui_test --dump previews
+python3 tools/render_preview.py previews
+```
+This writes `previews/*.png`. The font is a stand-in for the RA8875's built-in one; sizes and positions are exact.

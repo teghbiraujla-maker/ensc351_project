@@ -20,4 +20,4 @@ cmake -S "$ROOT" -B "$ROOT/build" \
       "${extra_args[@]}"
 cmake --build "$ROOT/build" -j"$(nproc)"
 echo
-echo "Built: $ROOT/build/app/{tour_player,audio_selftest}"
+echo "Built: $ROOT/build/app/{tour_player,audio_selftest,joystick_test,display_test}"

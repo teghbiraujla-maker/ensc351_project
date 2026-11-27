@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 static char lines[APP_LOG_CAPACITY][APP_LOG_LINE_CHARS];
@@ -21,6 +22,14 @@ bool app_log_init(const char *log_file_path, bool echo_to_stdout)
     echo = echo_to_stdout;
     bool ok = true;
     if (log_file_path != NULL && log_file_path[0] != '\0') {
+        // Keep the log from filling the SD card: past 1 MB, start a new one
+        // (the previous one is kept as <file>.old).
+        struct stat info;
+        if (stat(log_file_path, &info) == 0 && info.st_size > APP_LOG_MAX_FILE_BYTES) {
+            char old_path[1100];
+            snprintf(old_path, sizeof(old_path), "%s.old", log_file_path);
+            rename(log_file_path, old_path);
+        }
         log_file = fopen(log_file_path, "a");
         ok = (log_file != NULL);
     }

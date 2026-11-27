@@ -73,10 +73,25 @@ static int parse_turn(const char *word)
     return direction * clamp_steps(repeats);
 }
 
-control_event_t terminal_input_translate(const char *text)
+// "f" -> 1, "f20" -> 20 (letter followed by an optional count). 0 = no match.
+static int parse_letter_count(const char *word, char letter)
 {
-    control_event_t event = { CONTROL_UNKNOWN, 0 };
+    if (tolower((unsigned char)word[0]) != letter) {
+        return 0;
+    }
+    if (word[1] == '\0') {
+        return 1;
+    }
+    char *end = NULL;
+    long count = strtol(word + 1, &end, 10);
+    if (*end != '\0' || count <= 0 || !isdigit((unsigned char)word[1])) {
+        return 0;
+    }
+    return clamp_steps(count);
+}
 
+int terminal_input_translate(const char *text, control_event_t *out, int max)
+{
     while (isspace((unsigned char)*text)) {
         text++;
     }
@@ -86,12 +101,13 @@ control_event_t terminal_input_translate(const char *text)
     while (length > 0 && isspace((unsigned char)word[length - 1])) {
         word[--length] = '\0';
     }
-    if (length == 0) {
-        event.type = CONTROL_NONE;        // just pressed enter
-        return event;
+    if (length == 0 || max < 2) {
+        return 0;                         // just pressed enter
     }
 
+    control_event_t event = { CONTROL_UNKNOWN, 0 };
     int steps = parse_turn(word);
+    int count;
     if (steps != 0) {
         event.type = CONTROL_TURN;
         event.steps = steps;
@@ -99,6 +115,22 @@ control_event_t terminal_input_translate(const char *text)
         event.type = CONTROL_PRESS;
     } else if (!strcasecmp(word, "x") || !strcasecmp(word, "hold")) {
         event.type = CONTROL_LONG_PRESS;
+    } else if ((count = parse_letter_count(word, 'u')) > 0) {
+        event.type = CONTROL_VOLUME;
+        event.steps = count;
+    } else if ((count = parse_letter_count(word, 'd')) > 0) {
+        event.type = CONTROL_VOLUME;
+        event.steps = -count;
+    } else if ((count = parse_letter_count(word, 'f')) > 0 ||
+               (count = -parse_letter_count(word, 'b')) < 0) {
+        // Hold the stick right/left for `count` seconds of skipping, then let go.
+        out[0].type = CONTROL_SEEK_STEP;
+        out[0].steps = count;
+        out[1].type = CONTROL_SEEK_RELEASE;
+        out[1].steps = 0;
+        return 2;
+    } else if (!strcasecmp(word, "g") || !strcasecmp(word, "guide")) {
+        event.type = CONTROL_GUIDE;
     } else if (!strcasecmp(word, "i") || !strcasecmp(word, "info") || !strcasecmp(word, "status")) {
         event.type = CONTROL_STATUS;
     } else if (!strcasecmp(word, "l") || !strcasecmp(word, "list")) {
@@ -108,7 +140,8 @@ control_event_t terminal_input_translate(const char *text)
     } else if (!strcasecmp(word, "q") || !strcasecmp(word, "quit") || !strcasecmp(word, "exit")) {
         event.type = CONTROL_QUIT;
     }
-    return event;
+    out[0] = event;
+    return 1;
 }
 
 int terminal_input_fd(void)
@@ -128,12 +161,14 @@ bool terminal_input_read(terminal_input_deliver_t deliver)
 
     char line[LINE_CAPACITY];
     while (take_line(line, sizeof(line))) {
-        control_event_t event = terminal_input_translate(line);
-        if (event.type == CONTROL_NONE) {
-            continue;
+        control_event_t events[2];
+        int count = terminal_input_translate(line, events, 2);
+        if (count > 0) {
+            app_log_input(line);          // so the log shows what was typed
         }
-        app_log_input(line);              // so the GUI's terminal panel shows what was typed
-        deliver(event);
+        for (int i = 0; i < count; i++) {
+            deliver(events[i]);
+        }
     }
     return true;
 }
@@ -141,15 +176,13 @@ bool terminal_input_read(terminal_input_deliver_t deliver)
 const char *terminal_input_help_text(void)
 {
     return
-        "Encoder controls (typed commands pretend to be the encoder):\n"
-        "  +  or .      turn clockwise one click    (+++ = 3 clicks, +5 = 5 clicks)\n"
-        "  -  or ,      turn counter-clockwise      (--- = 3 clicks, -5 = 5 clicks)\n"
-        "  p            press\n"
-        "  x  or hold   hold (long press, ~1 s)\n"
-        "What they do:\n"
-        "  choosing a stop:  turn = move through the list, press = play\n"
-        "  playing:          turn = volume (5% per click), press = pause, hold = stop\n"
-        "  paused:           turn = skip 5 s per click, press = resume, hold = stop\n"
-        "Debug commands:\n"
-        "  i  status    l  list the stops    h  this help    q  quit\n";
+        "Typed commands (they pretend to be the encoder and joystick):\n"
+        "  Encoder:  +  turn clockwise (+++ or +5 = several clicks)   -  counter-clockwise\n"
+        "            p  press (pause/resume, or play the highlighted stop)\n"
+        "            x  hold (end the track)\n"
+        "  Joystick: u  up = volume +5% (u3 = +15%)    d  down = volume -5%\n"
+        "            f  right = skip forward 1 s (f20 = hold for 20 s of skipping)\n"
+        "            b  left = skip back 1 s (b20 = 20 s)\n"
+        "            g  press = show / close the directions\n"
+        "  Debug:    i  status    l  list the stops    h  this help    q  quit\n";
 }

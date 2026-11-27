@@ -20,16 +20,27 @@ if $do_build; then
 fi
 check_board_reachable
 
+# A running program cannot be overwritten: stop the service while copying.
+restart_service=false
+if stop_service_if_running; then
+    restart_service=true
+fi
+
 echo "Copying to $TARGET:$BOARD_DIR ..."
 # shellcheck disable=SC2029  # BOARD_DIR is meant to expand here, on the host
 ssh "${SSH_OPTS[@]}" "$TARGET" "mkdir -p '$BOARD_DIR'"
 scp "${SSH_OPTS[@]}" \
     "$ROOT/build/app/tour_player" "$ROOT/build/app/audio_selftest" \
+    "$ROOT/build/app/joystick_test" "$ROOT/build/app/display_test" \
     "$TARGET:$BOARD_DIR/"
 if $do_audio; then
     # Replace the board's audio folder so deleted files do not linger.
     # shellcheck disable=SC2029
     ssh "${SSH_OPTS[@]}" "$TARGET" "rm -rf '$BOARD_DIR/audio'"
     scp "${SSH_OPTS[@]}" -r "$ROOT/audio" "$TARGET:$BOARD_DIR/"
+fi
+if $restart_service; then
+    echo "Starting the $SERVICE_NAME service again ..."
+    ssh -t "${SSH_OPTS[@]}" "$TARGET" "sudo systemctl start $SERVICE_NAME"
 fi
 echo "Done. Run things with:  scripts/run_on_board.sh tour_player"

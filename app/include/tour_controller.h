@@ -1,21 +1,20 @@
 // tour_controller.h
-// The encoder-only control scheme. Turns CONTROL_TURN / PRESS / LONG_PRESS
-// events into player actions, depending on what is happening:
+// The tour's control rules. Turns control events (controls.h) into player
+// actions and keeps the state the GUI draws.
 //
-//   Mode       | Turn                         | Press         | Hold (~1 s)
-//   -----------+------------------------------+---------------+------------------
-//   CHOOSING   | move highlight (stops at the | play the      | -
-//   (stopped)  | first / last stop)           | highlighted   |
-//   PLAYING    | volume +/- 5% per click      | pause         | stop, back to list
-//   PAUSED     | skip +/- 5 s per click       | resume        | stop, back to list
-//              | (never past end - 1 s)       |               |
+//   Encoder turn        move the highlight in the list (never changes what is playing)
+//   Encoder press       pause / resume; if nothing is loaded, play the highlighted stop
+//   Encoder hold (1 s)  end the current track (nothing else)
+//   Joystick up / down  volume +/- 5% (repeats every 0.5 s while held)
+//   Joystick right/left skip forward / back: while held, the position bar previews
+//                       the new spot (10 s per second held); releasing the stick
+//                       jumps there once. Never before 0:00 or past end - 1 s.
+//   Joystick press      show the directions to the highlighted stop / close them
 //
-// When a track finishes by itself, the NEXT stop is highlighted (nothing
-// starts on its own); one press plays it.
-//
-// The GUI calls tour_controller_view() every frame and draws from it: it
-// says what mode we are in and which control the encoder is driving
-// ("focus"), so the matching widget can be highlighted.
+// When a track ends by itself, the next stop is highlighted and its
+// directions pop up; after the last stop a "tour complete" popup shows.
+// While a popup is open, only the joystick press (close) and the encoder
+// press (pause / resume a loaded track) do anything.
 //
 // Not thread-safe: call everything from the main loop only.
 
@@ -28,31 +27,31 @@
 #include "controls.h"
 
 #define TOUR_VOLUME_STEP_PERCENT 5
-#define TOUR_SEEK_STEP_SEC       5
 #define TOUR_END_GUARD_SEC       1    // skipping forward stops this far before the end
 
 typedef enum {
-    TOUR_MODE_CHOOSING,    // nothing playing: pick a stop
+    TOUR_MODE_CHOOSING,    // nothing loaded: pick a stop
     TOUR_MODE_PLAYING,
     TOUR_MODE_PAUSED,
 } tour_mode_t;
 
-// What turning the encoder changes right now (= what the GUI should highlight).
 typedef enum {
-    TOUR_FOCUS_TRACK_LIST,
-    TOUR_FOCUS_VOLUME,
-    TOUR_FOCUS_PROGRESS,
-} tour_focus_t;
+    TOUR_POPUP_NONE,
+    TOUR_POPUP_GUIDE,          // directions to popup_stop
+    TOUR_POPUP_TOUR_COMPLETE,  // the last stop finished
+} tour_popup_t;
 
 // Everything the GUI needs for one frame.
 typedef struct {
     tour_mode_t mode;
-    tour_focus_t focus;
     int track_count;
-    int highlighted;        // 0-based highlighted stop in the list; -1 if no tracks
-    int current;            // 0-based stop playing / paused / last played; -1 if none yet
-    bool tour_complete;     // the last stop finished playing
-    audio_status_t audio;   // state, position, duration, volume
+    int highlighted;          // 0-based stop selected with the encoder; -1 if no tracks
+    int playing;              // 0-based stop loaded (playing or paused); -1 if none
+    bool scrubbing;           // joystick held left/right
+    double position_sec;      // position to SHOW (the preview while scrubbing)
+    tour_popup_t popup;
+    int popup_stop;           // 0-based stop the guide popup is for
+    audio_status_t audio;     // the player's real state, position, duration, volume
 } tour_view_t;
 
 // The player functions the controller uses. main.c passes the real
@@ -60,6 +59,7 @@ typedef struct {
 typedef struct {
     audio_status_t (*get_status)(void);
     bool (*play)(const char *mp3_path);
+    bool (*load_paused)(const char *mp3_path, double position_sec);
     bool (*toggle_pause)(void);
     void (*stop)(void);
     void (*adjust_volume)(int delta_percent);
@@ -70,7 +70,12 @@ typedef struct {
 // Call after track_list_load(). The player struct must stay valid.
 void tour_controller_init(const tour_player_t *player);
 
-// React to an encoder event (TURN, PRESS, LONG_PRESS). Other events are ignored.
+// Start-up after a restart: load a stop PAUSED at position_sec (returns false
+// if it could not be loaded), and/or move the highlight.
+bool tour_controller_resume(int track_index, double position_sec);
+void tour_controller_set_highlight(int index);
+
+// React to an input event. Debug commands (help, status ...) are ignored.
 void tour_controller_handle(control_event_t event);
 
 // Call once per main-loop iteration: notices when a track ends by itself.

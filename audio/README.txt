@@ -1,14 +1,14 @@
 Put the tour's MP3 recordings in this folder.
 
  * Name them with a number first so they play in order:
-       01_Welcome_to_SFU.mp3
-       02_Academic_Quadrangle.mp3
-       03_Convocation_Mall.mp3
-   The menu shows "Welcome to SFU", "Academic Quadrangle", ... (number, extension
-   and underscores are dropped).
+       01_Transportation_Centre.mp3
+       02_WAC_Bennett.mp3
+   The list shows "Transportation Centre", "WAC Bennett", ... (number,
+   extension and underscores are dropped).
 
- * The three 01/02/03_Test_Tone files are 10-second placeholder beeps so you can
-   check the audio path before real recordings exist. Delete them when you add
-   real tracks.
+ * Directions to a stop (from the stop before it) go in a .txt file with
+   the same name, e.g. 02_WAC_Bennett.txt. Without a file the screen shows
+   "temp directions to location N". Stop 1 has no directions.
+   Blank lines start a new paragraph. About 250 characters fit in large text.
 
  * The folder is copied to the board by scripts/deploy.sh.

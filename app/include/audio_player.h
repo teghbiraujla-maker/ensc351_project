@@ -40,6 +40,10 @@ void audio_player_cleanup(void);
 // Returns false if the file cannot be read or the player is not running.
 bool audio_player_play(const char *mp3_path);
 
+// Load a file and leave it PAUSED at position_sec, silently (used to resume
+// after a restart). Blocks up to ~3 s while the player gets ready.
+bool audio_player_load_paused(const char *mp3_path, double position_sec);
+
 // Pause if playing, resume if paused. Returns false if nothing is loaded.
 bool audio_player_toggle_pause(void);
 

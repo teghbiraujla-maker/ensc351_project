@@ -5,8 +5,9 @@
 // callbacks run ON THAT THREAD, so keep them short and thread-safe (e.g. push
 // an event into a queue for the main loop).
 //
-// Pins (by line name): A = GPIO16, B = GPIO17, button = GPIO18 (active low,
-// internal pull-up). Change them at the top of encoder.c.
+// Pins (by line name): A = GPIO17 (pin 11), B = GPIO27 (pin 13),
+// button = GPIO22 (pin 15, active low, internal pull-up). Change them at the
+// top of encoder.c.
 
 #ifndef ENCODER_H_
 #define ENCODER_H_

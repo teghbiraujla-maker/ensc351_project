@@ -20,6 +20,12 @@ int track_list_count(void);
 const char *track_list_name(int index);   // e.g. "Convocation Mall"
 const char *track_list_path(int index);   // full path to the file
 
+// File name only, e.g. "03_Convocation_Mall.mp3" (NULL if out of range).
+const char *track_list_file_name(int index);
+
+// Index of the track with this file name, or -1 if there is none.
+int track_list_find(const char *file_name);
+
 void track_list_cleanup(void);
 
 #endif

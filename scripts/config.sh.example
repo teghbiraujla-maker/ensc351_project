@@ -20,6 +20,7 @@ BOARD_HOST="192.168.7.2"
 BOARD_DIR="campus_tour"
 
 # Optional extra options for cmake. Examples:
-#   -DENABLE_ENCODER=OFF      build without the rotary encoder (no libgpiod needed)
+#   -DENABLE_GPIO=OFF         build without GPIO (no libgpiod needed; no encoder/joystick button/screen reset)
+#   -DJOYSTICK_Y_UP_IS_HIGH=0 if joystick up/down come out swapped (also -DJOYSTICK_X_RIGHT_IS_HIGH=0)
 #   -DWARNINGS_AS_ERRORS=ON   treat compiler warnings as errors
 CMAKE_EXTRA_ARGS=""

@@ -126,6 +126,27 @@ const char *track_list_path(int index)
     return tracks[index].path;
 }
 
+const char *track_list_file_name(int index)
+{
+    if (index < 0 || index >= track_count) {
+        return NULL;
+    }
+    return tracks[index].file_name;
+}
+
+int track_list_find(const char *file_name)
+{
+    if (file_name == NULL) {
+        return -1;
+    }
+    for (int i = 0; i < track_count; i++) {
+        if (strcmp(tracks[i].file_name, file_name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 void track_list_cleanup(void)
 {
     for (int i = 0; i < track_count; i++) {

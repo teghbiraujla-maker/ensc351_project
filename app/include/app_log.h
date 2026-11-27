@@ -4,7 +4,8 @@
 // Each message is
 //   - kept in memory (the last APP_LOG_CAPACITY lines), so the GUI can show
 //     them in its "terminal" panel without the program printing over the screen;
-//   - echoed to stdout (the SSH terminal) unless that is turned off;
+//   - echoed to stdout (the SSH terminal, or the system journal when run as
+//     a service) unless that is turned off;
 //   - appended to a log file, if one was given (handy for debugging the GUI).
 //
 // Thread-safe. Messages containing '\n' are split into several lines.
@@ -17,6 +18,7 @@
 
 #define APP_LOG_CAPACITY   200   // lines kept in memory
 #define APP_LOG_LINE_CHARS 128   // longer lines are cut
+#define APP_LOG_MAX_FILE_BYTES (1024L * 1024L)   // log file is restarted past this size
 
 // log_file_path may be NULL (no file). Returns false if the file cannot be opened
 // (logging to memory and stdout still works).

@@ -31,3 +31,21 @@ check_board_reachable() {
         exit 1
     fi
 }
+
+# ---- The tour-player service (starts the tour at power-on) ----
+SERVICE_NAME="tour-player"
+
+service_is_active() {
+    ssh "${SSH_OPTS[@]}" "$TARGET" "systemctl is-active --quiet $SERVICE_NAME" 2>/dev/null
+}
+
+# The service and a hand-started program would fight over the sound card,
+# GPIO and screen, and a running program cannot be overwritten - so stop it.
+stop_service_if_running() {
+    if service_is_active; then
+        echo "Stopping the $SERVICE_NAME service (it starts again at the next boot, or with: scripts/service.sh start)"
+        ssh -t "${SSH_OPTS[@]}" "$TARGET" "sudo systemctl stop $SERVICE_NAME"
+        return 0
+    fi
+    return 1
+}

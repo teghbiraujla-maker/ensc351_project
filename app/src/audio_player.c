@@ -100,10 +100,8 @@ static void handle_line(const char *line)
             status.duration_sec = seconds + seconds_left;
         }
     } else if (strncmp(line, "@V ", 3) == 0) {
-        double volume = 0.0;
-        if (sscanf(line + 3, "%lf", &volume) == 1) {
-            status.volume_percent = (int)(volume + 0.5);
-        }
+        // Volume echo. Ignored: status.volume_percent is what WE last set, so a
+        // temporary mute (audio_player_load_paused) never shows up as 0% or gets saved.
     } else if (strncmp(line, "@E ", 3) == 0) {
         set_last_error_locked(line + 3);
         load_pending = false;
@@ -358,6 +356,49 @@ bool audio_player_play(const char *mp3_path)
         pthread_mutex_unlock(&state_mutex);
         return false;
     }
+    return true;
+}
+
+// Used after a restart: get to the saved spot without the visitor hearing it.
+//   1. mute (the remembered volume is kept), 2. LOAD, 3. wait for mpg123 to
+//   report the length, 4. pause, 5. jump to the spot, 6. restore the volume.
+#define RESUME_WAIT_MS 3000
+bool audio_player_load_paused(const char *mp3_path, double position_sec)
+{
+    assert(is_initialized);
+    pthread_mutex_lock(&state_mutex);
+    int volume = status.volume_percent;
+    pthread_mutex_unlock(&state_mutex);
+
+    send_command("VOLUME 0");
+    if (!audio_player_play(mp3_path)) {
+        send_command("VOLUME %d", volume);
+        return false;
+    }
+    audio_status_t now = audio_player_get_status();
+    for (int waited = 0; waited < RESUME_WAIT_MS && now.duration_sec <= 0.0
+                         && now.state == AUDIO_PLAYING; waited += 20) {
+        sleep_ms(20);
+        now = audio_player_get_status();
+    }
+    if (now.state != AUDIO_PLAYING) {           // failed to load (error, or file ended)
+        send_command("VOLUME %d", volume);
+        return false;
+    }
+    audio_player_toggle_pause();
+    now = audio_player_get_status();
+    double target = position_sec;
+    if (now.duration_sec > 0.0 && target > now.duration_sec - 1.0) {
+        target = now.duration_sec - 1.0;
+    }
+    if (target < 0.0) {
+        target = 0.0;
+    }
+    int jump = (int)(target - now.position_sec);
+    if (jump != 0) {
+        audio_player_seek_relative(jump);
+    }
+    send_command("VOLUME %d", volume);
     return true;
 }
 
